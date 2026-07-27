@@ -2,7 +2,10 @@
 
 import json
 import os
+import secrets
+import tempfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
@@ -11,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+
+from rag_bundle import BundleStore, BundleValidationError, stage_bundle
 
 from rag_service import (
     LLM_MODEL,
@@ -33,6 +38,39 @@ WEB_SEARCH_MAX_RESULTS = int(
     os.getenv("WEB_SEARCH_MAX_RESULTS", "10"),
 )
 
+
+
+def bundle_store() -> BundleStore:
+    return BundleStore(
+        Path(os.getenv("RAG_STAGING_DIR", "rag_staging")),
+        Path(os.getenv("RAG_BUNDLE_STATE_DIR", "rag_bundle_state")),
+    )
+
+
+def require_admin(request: Request) -> None:
+    token = os.getenv("RAG_ADMIN_TOKEN")
+
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail="RAG_ADMIN_TOKEN is not configured",
+        )
+
+    authorization = request.headers.get("authorization", "")
+
+    if not secrets.compare_digest(authorization, f"Bearer {token}"):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid admin token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def load_bundle(path: Path) -> None:
+    rag_service.load_from_paths(
+        path / "rag_index.faiss",
+        path / "rag_metadata.jsonl",
+    )
 
 mcp = FastMCP(
     name="Project Knowledge Gateway",
@@ -92,6 +130,9 @@ def extract_query(
 async def search_project(
     query: str,
     top_k: int = 6,
+    source_type: str | None = None,
+    language: str | None = None,
+    path_prefix: str | None = None,
 ) -> dict[str, Any]:
     """
     Search the indexed Project project source code.
@@ -109,6 +150,9 @@ async def search_project(
     results = await rag_service.retrieve(
         query=query,
         top_k=top_k,
+        source_type=source_type,
+        language=language,
+        path_prefix=path_prefix,
     )
 
     if not results:
@@ -138,7 +182,6 @@ async def search_project(
             "Relevant Project source-code fragments were found."
         ),
     }
-
 
 @mcp.tool()
 async def web_search(
@@ -284,6 +327,9 @@ async def web_search(
 async def ask_project(
     question: str,
     top_k: int = 6,
+    source_type: str | None = None,
+    language: str | None = None,
+    path_prefix: str | None = None,
 ) -> dict[str, Any]:
     """
     Answer a question about the Project project using
@@ -295,7 +341,11 @@ async def ask_project(
     return await rag_service.ask(
         question=question,
         top_k=top_k,
+        source_type=source_type,
+        language=language,
+        path_prefix=path_prefix,
     )
+
 
 
 @mcp.tool()
@@ -358,7 +408,12 @@ async def upstream_stream(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    rag_service.load()
+    active = bundle_store().active_bundle()
+
+    if active is None:
+        rag_service.load()
+    else:
+        load_bundle(active[0])
 
     async with mcp.session_manager.run():
         yield
@@ -374,15 +429,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=[
-        "GET",
-        "POST",
-        "DELETE",
-        "OPTIONS",
-    ],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["Mcp-Session-Id"],
 )
+
 
 
 @app.get("/health")
@@ -405,6 +456,171 @@ async def health() -> dict[str, Any]:
         ],
     }
 
+
+@app.post("/admin/index/upload")
+async def upload_index(request: Request) -> dict[str, Any]:
+    require_admin(request)
+
+
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+
+    if content_type != "application/zip":
+        raise HTTPException(
+            status_code=415,
+            detail="Bundle content type must be application/zip",
+        )
+
+    try:
+        max_size = int(os.getenv("RAG_UPLOAD_MAX_BYTES", str(512 * 1024 * 1024)))
+    except ValueError as error:
+        raise HTTPException(
+            status_code=500,
+            detail="RAG_UPLOAD_MAX_BYTES is invalid",
+        ) from error
+
+    if max_size <= 0:
+        raise HTTPException(
+            status_code=500,
+            detail="RAG_UPLOAD_MAX_BYTES must be positive",
+        )
+
+    content_length = request.headers.get("content-length")
+
+    if content_length is not None:
+        try:
+            if int(content_length) > max_size:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Bundle exceeds the configured size limit",
+                )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Content-Length",
+            ) from error
+
+    staging_dir = Path(os.getenv("RAG_STAGING_DIR", "rag_staging"))
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    archive_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".zip",
+            prefix="upload-",
+            dir=staging_dir,
+            delete=False,
+        ) as archive:
+            archive_path = Path(archive.name)
+            received = 0
+
+            async for chunk in request.stream():
+                received += len(chunk)
+
+                if received > max_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Bundle exceeds the configured size limit",
+                    )
+
+                archive.write(chunk)
+
+        bundle_dir, manifest = stage_bundle(archive_path, staging_dir, max_size)
+
+    except BundleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    finally:
+        if archive_path is not None:
+            archive_path.unlink(missing_ok=True)
+
+    return {
+        "status": "staged",
+        "staging_id": bundle_dir.name,
+        "document_count": manifest["document_count"],
+        "dimensions": manifest["dimensions"],
+    }
+
+
+
+@app.get("/admin/index/status")
+async def index_status(request: Request) -> dict[str, Any]:
+    require_admin(request)
+
+    try:
+        return {
+            "status": "ok",
+            "documents": rag_service.document_count,
+            "dimensions": rag_service.dimensions,
+            **bundle_store().status(),
+        }
+    except BundleValidationError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/admin/index/activate/{staging_id}")
+async def activate_index(staging_id: str, request: Request) -> dict[str, Any]:
+    require_admin(request)
+
+    try:
+        path, manifest = bundle_store().activate(staging_id)
+        load_bundle(path)
+    except BundleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+    return {
+        "status": "active",
+        "staging_id": staging_id,
+        "document_count": manifest["document_count"],
+        "dimensions": manifest["dimensions"],
+    }
+
+
+@app.post("/admin/index/reload")
+async def reload_index(request: Request) -> dict[str, Any]:
+    require_admin(request)
+
+    try:
+        active = bundle_store().active_bundle()
+
+        if active is None:
+            raise BundleValidationError("No active bundle is configured")
+
+        path, manifest = active
+        load_bundle(path)
+    except BundleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+    return {
+        "status": "reloaded",
+        "staging_id": path.name,
+        "document_count": manifest["document_count"],
+        "dimensions": manifest["dimensions"],
+    }
+
+
+@app.post("/admin/index/rollback")
+async def rollback_index(request: Request) -> dict[str, Any]:
+    require_admin(request)
+
+    try:
+        path, manifest = bundle_store().rollback()
+        load_bundle(path)
+    except BundleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+    return {
+        "status": "rolled_back",
+        "staging_id": path.name,
+        "document_count": manifest["document_count"],
+        "dimensions": manifest["dimensions"],
+    }
 
 @app.get("/health/searxng")
 async def health_searxng() -> dict[str, Any]:
@@ -466,10 +682,16 @@ async def models() -> dict[str, Any]:
 async def debug_search(
     query: str,
     top_k: int = 6,
+    source_type: str | None = None,
+    language: str | None = None,
+    path_prefix: str | None = None,
 ) -> dict[str, Any]:
     results = await rag_service.retrieve(
         query=query,
         top_k=top_k,
+        source_type=source_type,
+        language=language,
+        path_prefix=path_prefix,
     )
 
     return {
@@ -477,6 +699,7 @@ async def debug_search(
         "count": len(results),
         "results": results,
     }
+
 
 
 @app.post("/v1/chat/completions")
@@ -514,12 +737,21 @@ async def chat_completions(
         None,
     )
 
+    source_type = body.pop("rag_source_type", None)
+    language = body.pop("rag_language", None)
+    path_prefix = body.pop("rag_path_prefix", None)
+
+
     try:
         enriched_messages, sources = (
             await rag_service.prepare_messages(
                 messages=messages,
                 query=query,
                 top_k=requested_top_k,
+                source_type=source_type,
+                language=language,
+                path_prefix=path_prefix,
+
             )
         )
 

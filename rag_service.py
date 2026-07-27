@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 
 import json
+import math
+
 import os
+import re
+
 from pathlib import Path
 from typing import Any
 
@@ -156,45 +160,66 @@ MIN_RERANK_SCORE = (
 )
 
 
+def source_type_boosts() -> dict[str, float]:
+    raw_value = os.getenv("RAG_SOURCE_TYPE_BOOSTS", "{}")
+
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("RAG_SOURCE_TYPE_BOOSTS must be a JSON object") from error
+
+    if not isinstance(value, dict):
+        raise RuntimeError("RAG_SOURCE_TYPE_BOOSTS must be a JSON object")
+
+    boosts: dict[str, float] = {}
+
+    for source_type, boost in value.items():
+        if not isinstance(source_type, str):
+            raise RuntimeError("RAG_SOURCE_TYPE_BOOSTS keys must be strings")
+
+        try:
+            boosts[source_type] = float(boost)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(
+                "RAG_SOURCE_TYPE_BOOSTS values must be numbers"
+            ) from error
+
+    return boosts
+
+
+SOURCE_TYPE_BOOSTS = source_type_boosts()
+BM25_K1 = 1.5
+BM25_B = 0.75
+
+
+
 class RagService:
     def __init__(self) -> None:
         self.index: faiss.Index | None = None
         self.metadata: list[dict[str, Any]] = []
+        self._bm25_terms: list[dict[str, int]] = []
+        self._bm25_document_frequency: dict[str, int] = {}
+        self._bm25_average_length = 0.0
 
     def load(self) -> None:
-        if not INDEX_FILE.exists():
-            raise RuntimeError(
-                f"FAISS index not found: {INDEX_FILE}"
-            )
+        self.load_from_paths(INDEX_FILE, METADATA_FILE)
 
-        if not METADATA_FILE.exists():
-            raise RuntimeError(
-                "Metadata file not found: "
-                f"{METADATA_FILE}"
-            )
+    def load_from_paths(self, index_file: Path, metadata_file: Path) -> None:
+        if not index_file.exists():
+            raise RuntimeError(f"FAISS index not found: {index_file}")
 
-        self.index = faiss.read_index(
-            str(INDEX_FILE)
-        )
+        if not metadata_file.exists():
+            raise RuntimeError(f"Metadata file not found: {metadata_file}")
 
-        self.metadata = self._load_metadata(
-            METADATA_FILE
-        )
+        index = faiss.read_index(str(index_file))
+        metadata = self._load_metadata(metadata_file)
 
-        if self.index.ntotal != len(self.metadata):
-            raise RuntimeError(
-                "Index/metadata mismatch: "
-                f"{self.index.ntotal} "
-                f"!= {len(self.metadata)}"
-            )
+        if index.ntotal != len(metadata):
+            raise RuntimeError(f"Index/metadata mismatch: {index.ntotal} != {len(metadata)}")
 
-        print(
-            "Loaded Project RAG index: "
-            f"documents={self.index.ntotal}, "
-            f"dimensions={self.index.d}, "
-            f"rerank_enabled={RERANK_ENABLED}, "
-            f"rerank_candidates={RERANK_CANDIDATES}"
-        )
+        self.index = index
+        self.metadata = metadata
+        self._build_bm25_index()
 
     @staticmethod
     def _load_metadata(
@@ -204,6 +229,7 @@ class RagService:
 
         with path.open(
             "r",
+
             encoding="utf-8",
         ) as file:
             for line_number, line in enumerate(
@@ -237,6 +263,98 @@ class RagService:
     def document_count(self) -> int:
         if self.index is None:
             return 0
+    @staticmethod
+    def _tokens(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9_]+", text.lower())
+
+    def _build_bm25_index(self) -> None:
+        document_frequency: dict[str, int] = {}
+        term_counts: list[dict[str, int]] = []
+        total_length = 0
+
+        for item in self.metadata:
+            text = " ".join(
+                str(item.get(field, ""))
+                for field in ("file", "language", "full_name", "name", "detail", "code")
+            )
+            counts: dict[str, int] = {}
+
+            for token in self._tokens(text):
+                counts[token] = counts.get(token, 0) + 1
+
+            total_length += sum(counts.values())
+            term_counts.append(counts)
+
+            for token in counts:
+                document_frequency[token] = document_frequency.get(token, 0) + 1
+
+        self._bm25_terms = term_counts
+        self._bm25_document_frequency = document_frequency
+        self._bm25_average_length = total_length / len(term_counts) if term_counts else 0.0
+
+    @staticmethod
+    def _matches_filters(
+        item: dict[str, Any],
+        source_type: str | None,
+        language: str | None,
+        path_prefix: str | None,
+    ) -> bool:
+        if source_type is not None and item.get("source_type", "code") != source_type:
+            return False
+
+        if language is not None and item.get("language", "") != language:
+            return False
+
+        if path_prefix is not None:
+            file_name = str(item.get("file", "")).replace("\\", "/")
+            prefix = path_prefix.replace("\\", "/")
+            if not file_name.startswith(prefix):
+                return False
+
+        return True
+
+    def _bm25_scores(
+        self,
+        query: str,
+        allowed_indices: set[int],
+    ) -> dict[int, float]:
+        tokens = self._tokens(query)
+        if not tokens or not self._bm25_average_length:
+            return {}
+
+        document_count = len(self._bm25_terms)
+        scores: dict[int, float] = {}
+
+        for item_index in allowed_indices:
+            counts = self._bm25_terms[item_index]
+            document_length = sum(counts.values())
+            score = 0.0
+
+            for token in tokens:
+                frequency = counts.get(token, 0)
+                if not frequency:
+                    continue
+
+                document_frequency = self._bm25_document_frequency.get(token, 0)
+                inverse_frequency = max(
+                    0.0,
+                    math.log(
+                        (document_count - document_frequency + 0.5)
+                        / (document_frequency + 0.5)
+                        + 1.0
+                    ),
+                )
+                denominator = frequency + BM25_K1 * (
+                    1.0 - BM25_B + BM25_B * document_length / self._bm25_average_length
+                )
+                score += inverse_frequency * frequency * (BM25_K1 + 1.0) / denominator
+
+            if score:
+                scores[item_index] = score
+
+        return scores
+
+
 
         return int(self.index.ntotal)
 
@@ -525,263 +643,155 @@ class RagService:
         return ranked[:top_k]
 
     @staticmethod
-    def _faiss_fallback(
+    def _hybrid_fallback(
         candidates: list[dict[str, Any]],
         top_k: int,
     ) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
-
-        for candidate in candidates[:top_k]:
-            item = dict(candidate)
-            item["score"] = item["faiss_score"]
-            results.append(item)
-
+        results = [dict(candidate) for candidate in candidates[:top_k]]
+        for result in results:
+            result["score"] = result["hybrid_score"]
         return results
 
     async def retrieve(
         self,
         query: str,
         top_k: int | None = None,
+        source_type: str | None = None,
+        language: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[dict[str, Any]]:
         query = query.strip()
-
         if not query:
-            raise ValueError(
-                "Query must not be empty"
-            )
-
+            raise ValueError("Query must not be empty")
         if self.index is None:
-            raise RuntimeError(
-                "FAISS index is not loaded"
-            )
+            raise RuntimeError("FAISS index is not loaded")
+        if any(value is not None and not isinstance(value, str) for value in (source_type, language, path_prefix)):
+            raise ValueError("RAG filters must be strings")
 
-        limit = self._normalize_top_k(
-            top_k
-        )
+        limit = self._normalize_top_k(top_k)
+        filters_active = any(value is not None for value in (source_type, language, path_prefix))
+        candidate_count = self._candidate_count(limit) if RERANK_ENABLED else limit
+        allowed_indices = {
+            item_index for item_index, item in enumerate(self.metadata)
+            if self._matches_filters(item, source_type, language, path_prefix)
+        }
+        if not allowed_indices:
+            return []
 
-        candidate_count = (
-            self._candidate_count(limit)
-            if RERANK_ENABLED
-            else limit
-        )
-
-        timeout = httpx.Timeout(
-            REQUEST_TIMEOUT
-        )
-
-        async with httpx.AsyncClient(
-            timeout=timeout,
-        ) as client:
-            vector = await self.get_embedding(
-                client,
-                query,
-            )
-
-            scores, indices = self.index.search(
-                vector,
-                candidate_count,
-            )
-
-            candidates: list[
-                dict[str, Any]
-            ] = []
-
-            for score, item_index in zip(
-                scores[0],
-                indices[0],
-            ):
+        search_count = len(self.metadata) if filters_active else candidate_count
+        async with httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT)) as client:
+            vector = await self.get_embedding(client, query)
+            scores, indices = self.index.search(vector, search_count)
+            faiss_scores: dict[int, float] = {}
+            faiss_ranks: dict[int, int] = {}
+            for score, item_index in zip(scores[0], indices[0]):
                 item_index = int(item_index)
                 faiss_score = float(score)
-
-                if item_index < 0:
+                if item_index not in allowed_indices or faiss_score < MIN_FAISS_SCORE:
                     continue
+                faiss_scores[item_index] = faiss_score
+                faiss_ranks[item_index] = len(faiss_ranks) + 1
+                if len(faiss_ranks) >= candidate_count:
+                    break
 
-                if item_index >= len(
-                    self.metadata
-                ):
-                    continue
-
-                if faiss_score < MIN_FAISS_SCORE:
-                    continue
-
-                metadata_item = self.metadata[
-                    item_index
-                ]
-
-                candidates.append(
-                    self._metadata_to_result(
-                        item=metadata_item,
-                        item_index=item_index,
-                        faiss_score=faiss_score,
-                    )
-                )
-
-            if not candidates:
+            bm25_scores = self._bm25_scores(query, allowed_indices)
+            bm25_ranked = sorted(bm25_scores, key=bm25_scores.get, reverse=True)[:candidate_count]
+            bm25_ranks = {item_index: rank for rank, item_index in enumerate(bm25_ranked, start=1)}
+            candidate_indices = set(faiss_ranks) | set(bm25_ranks)
+            if not candidate_indices:
                 return []
 
-            if not RERANK_ENABLED:
-                return self._faiss_fallback(
-                    candidates,
-                    limit,
+            candidates: list[dict[str, Any]] = []
+            for item_index in candidate_indices:
+                faiss_score = faiss_scores.get(item_index)
+                candidate = self._metadata_to_result(
+                    self.metadata[item_index], item_index, faiss_score or 0.0
                 )
+                candidate["faiss_score"] = faiss_score
+                candidate["bm25_score"] = bm25_scores.get(item_index)
+                rank_score = sum(
+                    1.0 / (60 + rank)
+                    for rank in (faiss_ranks.get(item_index), bm25_ranks.get(item_index))
+                    if rank is not None
+                )
+                candidate["hybrid_score"] = rank_score * SOURCE_TYPE_BOOSTS.get(
+                    str(candidate["source_type"]), 1.0
+                )
+                candidate["score"] = candidate["hybrid_score"]
+                candidates.append(candidate)
+
+            candidates.sort(key=lambda candidate: candidate["hybrid_score"], reverse=True)
+            if not RERANK_ENABLED:
+                return self._hybrid_fallback(candidates, limit)
 
             try:
-                reranked = await self.rerank(
-                    client=client,
-                    query=query,
-                    candidates=candidates,
-                    top_k=limit,
-                )
-
+                reranked = await self.rerank(client, query, candidates, limit)
                 if reranked:
-                    return reranked
-
+                    for candidate in reranked:
+                        candidate["score"] = candidate["rerank_score"] * SOURCE_TYPE_BOOSTS.get(
+                            str(candidate["source_type"]), 1.0
+                        )
+                    return sorted(reranked, key=lambda candidate: candidate["score"], reverse=True)
                 if not RERANK_FALLBACK:
                     return []
-
-                print(
-                    "Reranker returned no results; "
-                    "falling back to FAISS ranking"
-                )
-
-            except (
-                httpx.HTTPError,
-                RuntimeError,
-                ValueError,
-            ) as error:
+                print("Reranker returned no results; falling back to hybrid ranking")
+            except (httpx.HTTPError, RuntimeError, ValueError) as error:
                 if not RERANK_FALLBACK:
                     raise
+                print(f"Rerank failed; falling back to hybrid: {error}")
 
-                print(
-                    "Rerank failed; "
-                    "falling back to FAISS: "
-                    f"{error}"
-                )
-
-            return self._faiss_fallback(
-                candidates,
-                limit,
-            )
+            return self._hybrid_fallback(candidates, limit)
 
     @staticmethod
     def build_context(
         results: list[dict[str, Any]],
-    ) -> tuple[
-        str,
-        list[dict[str, Any]],
-    ]:
+    ) -> tuple[str, list[dict[str, Any]]]:
         chunks: list[str] = []
         sources: list[dict[str, Any]] = []
         total_chars = 0
 
-        for position, result in enumerate(
-            results,
-            start=1,
-        ):
-            rerank_score = result.get(
-                "rerank_score"
-            )
-
-            faiss_score = result.get(
-                "faiss_score"
-            )
-
+        for position, result in enumerate(results, start=1):
             score_lines: list[str] = []
+            if result.get("rerank_score") is not None:
+                score_lines.append(f"Rerank relevance: {float(result['rerank_score']):.6f}")
+            if result.get("faiss_score") is not None:
+                score_lines.append(f"FAISS similarity: {float(result['faiss_score']):.6f}")
+            if result.get("bm25_score") is not None:
+                score_lines.append(f"BM25 score: {float(result['bm25_score']):.6f}")
 
-            if rerank_score is not None:
-                score_lines.append(
-                    "Rerank relevance: "
-                    f"{float(rerank_score):.6f}"
-                )
-
-            if faiss_score is not None:
-                score_lines.append(
-                    "FAISS similarity: "
-                    f"{float(faiss_score):.6f}"
-                )
-
-            chunk = "\n".join(
-                    (
-                        "Source type: "
-                        f"{result.get('source_type', 'code')}"
-                    ),
-
-                [
-                    f"[Source {position}]",
-                    *score_lines,
-                    (
-                        "Language: "
-                        f"{result['language']}"
-                    ),
-                    (
-                        "File: "
-                        f"{result['file']}"
-                    ),
-                    (
-                        "Symbol: "
-                        f"{result['symbol']}"
-                    ),
-                    (
-                        "Signature: "
-                        f"{result['signature']}"
-                    ),
-                    (
-                        "Lines: "
-                        f"{result['start_line']}-"
-                        f"{result['end_line']}"
-                    ),
-                    "Code:",
-                    str(result["code"]),
-                ]
-            )
-
-            remaining = (
-                MAX_CONTEXT_CHARS
-                - total_chars
-            )
-
+            chunk = "\n".join([
+                f"[Source {position}]",
+                *score_lines,
+                f"Source type: {result.get('source_type', 'code')}",
+                f"Language: {result['language']}",
+                f"File: {result['file']}",
+                f"Symbol: {result['symbol']}",
+                f"Signature: {result['signature']}",
+                f"Lines: {result['start_line']}-{result['end_line']}",
+                "Code:",
+                str(result["code"]),
+            ])
+            remaining = MAX_CONTEXT_CHARS - total_chars
             if remaining <= 0:
                 break
-
             if len(chunk) > remaining:
                 chunk = chunk[:remaining]
-
             chunks.append(chunk)
             total_chars += len(chunk)
+            sources.append({
+                "score": result["score"],
+                "rerank_score": result.get("rerank_score"),
+                "faiss_score": result.get("faiss_score"),
+                "file": result["file"],
+                "source_type": result.get("source_type", "code"),
+                "symbol": result["symbol"],
+                "start_line": result["start_line"],
+                "end_line": result["end_line"],
+            })
 
-            sources.append(
-                {
-                    "score": result["score"],
-                    "rerank_score": (
-                        result.get(
-                            "rerank_score"
+        return "\n\n---\n\n".join(chunks), sources
 
-                        )
-                    ),
-                    "faiss_score": (
-                        result.get(
-                            "faiss_score"
-                        )
-                    ),
-                    "file": result["file"],
-                    "source_type": result.get("source_type", "code"),
 
-                    "symbol": result["symbol"],
-                    "start_line": (
-                        result["start_line"]
-                    ),
-                    "end_line": (
-                        result["end_line"]
-                    ),
-                }
-            )
-
-        return (
-            "\n\n---\n\n".join(chunks),
-            sources,
-        )
-
-    @staticmethod
     def enrich_messages(
         original_messages: list[
             dict[str, Any]
@@ -880,12 +890,20 @@ class RagService:
         messages: list[dict[str, Any]],
         query: str,
         top_k: int | None = None,
+        source_type: str | None = None,
+        language: str | None = None,
+        path_prefix: str | None = None,
+
     ) -> tuple[
         list[dict[str, Any]],
         list[dict[str, Any]],
     ]:
         results = await self.retrieve(
             query=query,
+            source_type=source_type,
+            language=language,
+            path_prefix=path_prefix,
+
             top_k=top_k,
         )
 
@@ -904,9 +922,17 @@ class RagService:
         self,
         question: str,
         top_k: int | None = None,
+        source_type: str | None = None,
+        language: str | None = None,
+        path_prefix: str | None = None,
+
     ) -> dict[str, Any]:
         results = await self.retrieve(
             query=question,
+            source_type=source_type,
+            language=language,
+            path_prefix=path_prefix,
+
             top_k=top_k,
         )
 
