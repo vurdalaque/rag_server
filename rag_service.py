@@ -296,6 +296,36 @@ class RagService:
         self._bm25_average_length = total_length / len(term_counts) if term_counts else 0.0
 
     @staticmethod
+    def _normalize_path(path: str) -> str:
+        return path.replace("\\", "/")
+
+    @staticmethod
+    def _path_matches(file_name: str, path_prefix: str) -> bool:
+        normalized_file = RagService._normalize_path(file_name).lower()
+        prefix = RagService._normalize_path(path_prefix).strip("/").lower()
+
+        if not prefix:
+            return True
+
+        if normalized_file.startswith(prefix):
+            return True
+
+        if normalized_file.startswith(f"/{prefix}"):
+            return True
+
+        file_segments = [segment for segment in normalized_file.split("/") if segment]
+        prefix_segments = [segment for segment in prefix.split("/") if segment]
+
+        if not prefix_segments:
+            return True
+
+        for index in range(len(file_segments) - len(prefix_segments) + 1):
+            if file_segments[index:index + len(prefix_segments)] == prefix_segments:
+                return True
+
+        return False
+
+    @staticmethod
     def _matches_filters(
         item: dict[str, Any],
         source_type: str | None,
@@ -309,9 +339,8 @@ class RagService:
             return False
 
         if path_prefix is not None:
-            file_name = str(item.get("file", "")).replace("\\", "/")
-            prefix = path_prefix.replace("\\", "/")
-            if not file_name.startswith(prefix):
+            file_name = str(item.get("file", ""))
+            if not RagService._path_matches(file_name, path_prefix):
                 return False
 
         return True

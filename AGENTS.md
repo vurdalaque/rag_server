@@ -34,6 +34,7 @@ pyproject.toml     — сборка и dev-инструменты
 | `documentation` | Markdown, DOCX и другие документы |
 
 Фильтры MCP/API и boost (`RAG_SOURCE_TYPE_BOOSTS`) используют эти строки как есть.
+`path_prefix` сопоставляется и с абсолютными путями metadata, и с относительными сегментами (`backend/sources/radius-ipc`).
 
 ## Переменные окружения
 
@@ -98,7 +99,7 @@ MCP tools и HTTP API принимают:
 
 - `source_type` — `code` или `documentation`
 - `language` — значение из metadata (`python`, `markdown`, …)
-- `path_prefix` — префикс пути файла (нормализуется `/` и `\`)
+- `path_prefix` — префикс пути файла; поддерживаются абсолютные пути и относительные сегменты (`backend/sources/radius-ipc`)
 
 В OpenAI chat completions фильтры передаются как `rag_source_type`, `rag_language`, `rag_path_prefix` в теле запроса.
 

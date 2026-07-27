@@ -208,6 +208,56 @@ def test_retrieve_applies_source_type_language_and_path_prefix_filters(
     assert {result["file"] for result in source} == {"src/main.py", "src/test_main.py"}
 
 
+def test_path_matches_supports_relative_prefix_in_absolute_paths() -> None:
+    file_name = "D:/projects/radius/backend/sources/radius-ipc/src/ipc_service.cpp"
+
+    assert RagService._path_matches(file_name, "backend/sources/radius-ipc")
+    assert RagService._path_matches(file_name, "backend\\sources\\radius-ipc")
+    assert RagService._path_matches(file_name, "D:/projects/radius/backend/sources/radius-ipc")
+    assert not RagService._path_matches(file_name, "frontend/src")
+
+
+def test_retrieve_matches_relative_path_prefix_in_absolute_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_rag_service(
+        [
+            metadata_item(
+                "D:/projects/radius/backend/sources/radius-ipc/src/ipc_service.cpp",
+                "code",
+                "cpp",
+                "ipc service",
+            ),
+            metadata_item(
+                "D:/projects/radius/frontend/src/main.ts",
+                "code",
+                "typescript",
+                "frontend main",
+            ),
+        ],
+        [[1.0, 0.0], [0.0, 1.0]],
+    )
+
+    async def embedding(*_: object) -> np.ndarray:
+        return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(service, "get_embedding", embedding)
+    monkeypatch.setattr(rag_service_module, "RERANK_ENABLED", False)
+
+    results = asyncio.run(
+        service.retrieve(
+            "ipc",
+            source_type="code",
+            language="cpp",
+            path_prefix="backend/sources/radius-ipc",
+        )
+    )
+
+    assert [result["file"] for result in results] == [
+        "D:/projects/radius/backend/sources/radius-ipc/src/ipc_service.cpp"
+    ]
+
+
 def test_retrieve_applies_source_type_boost_to_hybrid_ranking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
