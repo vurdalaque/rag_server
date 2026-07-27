@@ -84,8 +84,14 @@ def test_stage_bundle_removes_invalid_bundle(tmp_path: Path) -> None:
     assert list(staging_dir.iterdir()) == []
 
 
-def test_upload_requires_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_upload_requires_bearer_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("RAG_ADMIN_TOKEN", "test-token")
+    monkeypatch.setenv("RAG_STAGING_DIR", str(tmp_path / "staging"))
+    monkeypatch.setenv("RAG_BUNDLE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("RAG_INDEX_FILE", str(tmp_path / "missing.faiss"))
+    monkeypatch.setenv("RAG_METADATA_FILE", str(tmp_path / "missing.jsonl"))
+    rag_server.rag_service.clear()
+
     response = TestClient(rag_server.app).post(
         "/admin/index/upload",
         content=b"",
@@ -95,12 +101,35 @@ def test_upload_requires_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 401
 
 
+def test_server_starts_without_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAG_ADMIN_TOKEN", "test-token")
+    monkeypatch.setenv("RAG_STAGING_DIR", str(tmp_path / "staging"))
+    monkeypatch.setenv("RAG_BUNDLE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("RAG_INDEX_FILE", str(tmp_path / "missing.faiss"))
+    monkeypatch.setenv("RAG_METADATA_FILE", str(tmp_path / "missing.jsonl"))
+    rag_server.rag_service.clear()
+
+    with TestClient(rag_server.app) as client:
+        health = client.get("/health")
+
+    assert health.status_code == 200
+    payload = health.json()
+    assert payload["status"] == "ok"
+    assert payload["index_loaded"] is False
+    assert payload["documents"] == 0
+    assert payload["dimensions"] == 0
+
+
 def test_upload_stages_valid_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     staging_dir = tmp_path / "staging"
     active_index = tmp_path / "active.faiss"
     active_index.write_bytes(b"active")
     monkeypatch.setenv("RAG_ADMIN_TOKEN", "test-token")
     monkeypatch.setenv("RAG_STAGING_DIR", str(staging_dir))
+    monkeypatch.setenv("RAG_BUNDLE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("RAG_INDEX_FILE", str(tmp_path / "missing.faiss"))
+    monkeypatch.setenv("RAG_METADATA_FILE", str(tmp_path / "missing.jsonl"))
+    rag_server.rag_service.clear()
 
     response = TestClient(rag_server.app).post(
         "/admin/index/upload",
@@ -123,6 +152,9 @@ def test_admin_activate_reload_and_rollback(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("RAG_ADMIN_TOKEN", "test-token")
     monkeypatch.setenv("RAG_STAGING_DIR", str(staging_dir))
     monkeypatch.setenv("RAG_BUNDLE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("RAG_INDEX_FILE", str(tmp_path / "missing.faiss"))
+    monkeypatch.setenv("RAG_METADATA_FILE", str(tmp_path / "missing.jsonl"))
+    rag_server.rag_service.clear()
     headers = {"authorization": "Bearer test-token", "content-type": "application/zip"}
     client = TestClient(rag_server.app)
     bundle = make_bundle(tmp_path).read_bytes()

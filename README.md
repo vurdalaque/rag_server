@@ -6,7 +6,7 @@ RAG search server для индекса, собранного [rag_crawler](../r
 
 ## Возможности
 
-- `GET /health` — статус и число документов
+- `GET /health` — статус, `index_loaded`, число документов
 - `GET /debug/search` — отладочный поиск с фильтрами
 - `POST /v1/chat/completions` — RAG-чат (OpenAI-совместимый)
 - `POST /admin/index/*` — upload, activate, rollback bundle
@@ -46,6 +46,8 @@ chmod +x start.sh
 ```
 
 Скрипт читает `.env`, создаёт `data/staging` и `data/state`, запускает uvicorn.
+
+Сервер стартует **без индекса** — поиск будет пустым, пока не загрузите bundle через admin API или не укажете `RAG_INDEX_FILE` / `RAG_METADATA_FILE`.
 
 Параметры:
 

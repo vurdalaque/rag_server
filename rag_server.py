@@ -155,6 +155,19 @@ async def search_project(
         path_prefix=path_prefix,
     )
 
+    if not rag_service.index_loaded:
+        return {
+            "query": query,
+            "searched_sources": [],
+            "count": 0,
+            "results": [],
+            "retry_recommended": False,
+            "message": (
+                "Search index is not loaded. "
+                "Upload and activate a bundle via /admin/index/*."
+            ),
+        }
+
     if not results:
         return {
             "query": query,
@@ -369,6 +382,7 @@ async def radius_status() -> str:
     return json.dumps(
         {
             "status": "ok",
+            "index_loaded": rag_service.index_loaded,
             "documents": rag_service.document_count,
             "dimensions": rag_service.dimensions,
             "searxng_url": SEARXNG_URL,
@@ -411,7 +425,10 @@ async def lifespan(_: FastAPI):
     active = bundle_store().active_bundle()
 
     if active is None:
-        rag_service.load()
+        if not rag_service.load_if_available():
+            print(
+                "RAG index not loaded; upload and activate a bundle via /admin/index/*"
+            )
     else:
         load_bundle(active[0])
 
@@ -440,6 +457,7 @@ app.add_middleware(
 async def health() -> dict[str, Any]:
     return {
         "status": "ok",
+        "index_loaded": rag_service.index_loaded,
         "documents": rag_service.document_count,
         "dimensions": rag_service.dimensions,
         "llm_model": LLM_MODEL,
@@ -550,6 +568,7 @@ async def index_status(request: Request) -> dict[str, Any]:
     try:
         return {
             "status": "ok",
+            "index_loaded": rag_service.index_loaded,
             "documents": rag_service.document_count,
             "dimensions": rag_service.dimensions,
             **bundle_store().status(),

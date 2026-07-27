@@ -202,7 +202,28 @@ class RagService:
         self._bm25_average_length = 0.0
 
     def load(self) -> None:
-        self.load_from_paths(INDEX_FILE, METADATA_FILE)
+        self.load_from_paths(
+            Path(os.getenv("RAG_INDEX_FILE", "rag_index.faiss")),
+            Path(os.getenv("RAG_METADATA_FILE", "rag_metadata.jsonl")),
+        )
+
+    def load_if_available(self) -> bool:
+        index_file = Path(os.getenv("RAG_INDEX_FILE", "rag_index.faiss"))
+        metadata_file = Path(os.getenv("RAG_METADATA_FILE", "rag_metadata.jsonl"))
+
+        if not index_file.exists() or not metadata_file.exists():
+            self.clear()
+            return False
+
+        self.load_from_paths(index_file, metadata_file)
+        return True
+
+    def clear(self) -> None:
+        self.index = None
+        self.metadata = []
+        self._bm25_terms = []
+        self._bm25_document_frequency = {}
+        self._bm25_average_length = 0.0
 
     def load_from_paths(self, index_file: Path, metadata_file: Path) -> None:
         if not index_file.exists():
@@ -258,6 +279,10 @@ class RagService:
                 result.append(item)
 
         return result
+
+    @property
+    def index_loaded(self) -> bool:
+        return self.index is not None
 
     @property
     def document_count(self) -> int:
@@ -692,7 +717,7 @@ class RagService:
         if not query:
             raise ValueError("Query must not be empty")
         if self.index is None:
-            raise RuntimeError("FAISS index is not loaded")
+            return []
         if any(value is not None and not isinstance(value, str) for value in (source_type, language, path_prefix)):
             raise ValueError("RAG filters must be strings")
 
