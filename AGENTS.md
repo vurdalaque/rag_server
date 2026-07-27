@@ -106,13 +106,11 @@ MCP tools и HTTP API принимают:
 ## Запуск
 
 ```bash
-pip install -e ".[dev]"
-
-# или
-pip install -r requirements.txt
-
-uvicorn rag_server:app --host 0.0.0.0 --port 8000
+cp env.example .env
+./start.sh
 ```
+
+Или вручную: `uvicorn rag_server:app --host 0.0.0.0 --port 8000` (см. [README.md](README.md)).
 
 ## Проверка
 

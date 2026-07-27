@@ -28,7 +28,45 @@ pip install -e ".[dev]"
 pip install -r requirements.txt
 ```
 
-## Запуск
+## Быстрый старт
+
+```powershell
+# Windows
+copy env.example .env
+# отредактируйте RAG_ADMIN_TOKEN и EMBEDDING_URL
+
+.\start.ps1
+```
+
+```bash
+# Linux / macOS
+cp env.example .env
+chmod +x start.sh
+./start.sh
+```
+
+Скрипт читает `.env`, создаёт `data/staging` и `data/state`, запускает uvicorn.
+
+Параметры:
+
+```powershell
+.\start.ps1 -Port 8010 -BindHost 127.0.0.1
+.\start.ps1 -EnvFile .env.local
+```
+
+```bash
+./start.sh --port 8010 --env-file .env.local
+```
+
+Проверка:
+
+```bash
+curl http://localhost:8000/health
+```
+
+## Запуск вручную
+
+Если нужен запуск без скрипта:
 
 ```bash
 export RAG_ADMIN_TOKEN=your-secret-token
@@ -39,8 +77,8 @@ export EMBEDDING_MODEL=qwen3-embedding
 export RAG_INDEX_FILE=/path/to/rag_index.faiss
 export RAG_METADATA_FILE=/path/to/rag_metadata.jsonl
 
-export RAG_STAGING_DIR=./rag_staging
-export RAG_BUNDLE_STATE_DIR=./rag_bundle_state
+export RAG_STAGING_DIR=./data/staging
+export RAG_BUNDLE_STATE_DIR=./data/state
 
 uvicorn rag_server:app --host 0.0.0.0 --port 8000
 ```
@@ -119,8 +157,8 @@ curl "http://localhost:8000/debug/search?query=ipc&source_type=code&language=cpp
 | Переменная | По умолчанию | Назначение |
 |------------|--------------|------------|
 | `RAG_ADMIN_TOKEN` | — | Bearer token (обязателен для admin) |
-| `RAG_STAGING_DIR` | `rag_staging` | Staging bundle |
-| `RAG_BUNDLE_STATE_DIR` | `rag_bundle_state` | Active/previous markers |
+| `RAG_STAGING_DIR` | `rag_staging` | Staging bundle (скрипт по умолчанию: `./data/staging`) |
+| `RAG_BUNDLE_STATE_DIR` | `rag_bundle_state` | Active/previous markers (скрипт: `./data/state`) |
 | `RAG_UPLOAD_MAX_BYTES` | `536870912` | Лимит upload (512 MB) |
 
 ### Поиск

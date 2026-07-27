@@ -30,7 +30,11 @@ htmlcov/
 # Server runtime and E2E artifacts
 rag_staging/
 rag_bundle_state/
+data/
 e2e_run/
+.env
+.env.*
+!.env.example
 
 # Local index copies (use bundle deploy instead)
 rag_index.faiss
