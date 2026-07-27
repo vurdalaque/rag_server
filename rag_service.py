@@ -263,6 +263,9 @@ class RagService:
     def document_count(self) -> int:
         if self.index is None:
             return 0
+
+        return int(self.index.ntotal)
+
     @staticmethod
     def _tokens(text: str) -> list[str]:
         return re.findall(r"[a-z0-9_]+", text.lower())
@@ -353,10 +356,6 @@ class RagService:
                 scores[item_index] = score
 
         return scores
-
-
-
-        return int(self.index.ntotal)
 
     @property
     def dimensions(self) -> int:
