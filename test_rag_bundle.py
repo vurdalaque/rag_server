@@ -187,7 +187,7 @@ def test_retrieve_applies_source_type_language_and_path_prefix_filters(
     service = make_rag_service(
         [
             metadata_item("src/main.py", "code", "python", "alpha"),
-            metadata_item("docs/guide.md", "docs", "markdown", "alpha"),
+            metadata_item("docs/guide.md", "documentation", "markdown", "alpha"),
             metadata_item("src/test_main.py", "code", "python", "alpha"),
         ],
         [[1.0, 0.0], [0.9, 0.1], [0.8, 0.2]],
@@ -199,7 +199,7 @@ def test_retrieve_applies_source_type_language_and_path_prefix_filters(
     monkeypatch.setattr(service, "get_embedding", embedding)
     monkeypatch.setattr(rag_service_module, "RERANK_ENABLED", False)
 
-    docs = asyncio.run(service.retrieve("alpha", source_type="docs"))
+    docs = asyncio.run(service.retrieve("alpha", source_type="documentation"))
     python = asyncio.run(service.retrieve("alpha", language="python"))
     source = asyncio.run(service.retrieve("alpha", path_prefix="src\\"))
 
@@ -214,7 +214,7 @@ def test_retrieve_applies_source_type_boost_to_hybrid_ranking(
     service = make_rag_service(
         [
             metadata_item("src/main.py", "code", "python", "other"),
-            metadata_item("docs/guide.md", "docs", "markdown", "needle"),
+            metadata_item("docs/guide.md", "documentation", "markdown", "needle"),
         ],
         [[1.0, 0.0], [0.9, 0.1]],
     )
@@ -224,7 +224,7 @@ def test_retrieve_applies_source_type_boost_to_hybrid_ranking(
 
     monkeypatch.setattr(service, "get_embedding", embedding)
     monkeypatch.setattr(rag_service_module, "RERANK_ENABLED", False)
-    monkeypatch.setattr(rag_service_module, "SOURCE_TYPE_BOOSTS", {"docs": 3.0})
+    monkeypatch.setattr(rag_service_module, "SOURCE_TYPE_BOOSTS", {"documentation": 3.0})
 
     results = asyncio.run(service.retrieve("needle", top_k=2))
 
@@ -239,7 +239,7 @@ def test_retrieve_combines_bm25_and_faiss_candidates(
         [
             metadata_item("src/main.py", "code", "python", "other"),
             metadata_item("src/near.py", "code", "python", "other"),
-            metadata_item("docs/needle.md", "docs", "markdown", "needle needle"),
+            metadata_item("docs/needle.md", "documentation", "markdown", "needle needle"),
         ],
         [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]],
     )
@@ -266,7 +266,7 @@ def test_build_context_includes_scores_and_source_metadata() -> None:
                 "rerank_score": 0.8,
                 "faiss_score": 0.7,
                 "bm25_score": 1.2,
-                "source_type": "docs",
+                "source_type": "documentation",
                 "language": "markdown",
                 "file": "docs/guide.md",
                 "symbol": "guide",
@@ -281,14 +281,14 @@ def test_build_context_includes_scores_and_source_metadata() -> None:
     assert "Rerank relevance: 0.800000" in context
     assert "FAISS similarity: 0.700000" in context
     assert "BM25 score: 1.200000" in context
-    assert "Source type: docs" in context
+    assert "Source type: documentation" in context
     assert sources == [
         {
             "score": 0.9,
             "rerank_score": 0.8,
             "faiss_score": 0.7,
             "file": "docs/guide.md",
-            "source_type": "docs",
+            "source_type": "documentation",
             "symbol": "guide",
             "start_line": 1,
             "end_line": 2,
@@ -318,7 +318,7 @@ def test_public_search_entry_points_forward_filters(monkeypatch: pytest.MonkeyPa
             return {
                 "messages": [{"role": "user", "content": "question"}],
                 "stream": True,
-                "rag_source_type": "docs",
+                "rag_source_type": "documentation",
                 "rag_language": "markdown",
                 "rag_path_prefix": "docs/",
             }
@@ -327,19 +327,19 @@ def test_public_search_entry_points_forward_filters(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(rag_server.rag_service, "ask", ask)
     monkeypatch.setattr(rag_server.rag_service, "prepare_messages", prepare_messages)
 
-    asyncio.run(rag_server.search_project("query", source_type="docs", language="markdown", path_prefix="docs/"))
-    asyncio.run(rag_server.ask_project("question", source_type="docs", language="markdown", path_prefix="docs/"))
-    asyncio.run(rag_server.debug_search("query", source_type="docs", language="markdown", path_prefix="docs/"))
+    asyncio.run(rag_server.search_project("query", source_type="documentation", language="markdown", path_prefix="docs/"))
+    asyncio.run(rag_server.ask_project("question", source_type="documentation", language="markdown", path_prefix="docs/"))
+    asyncio.run(rag_server.debug_search("query", source_type="documentation", language="markdown", path_prefix="docs/"))
     asyncio.run(rag_server.chat_completions(FakeRequest()))
 
     for call in retrieve_calls:
-        assert call["source_type"] == "docs"
+        assert call["source_type"] == "documentation"
         assert call["language"] == "markdown"
         assert call["path_prefix"] == "docs/"
-    assert ask_calls[0]["source_type"] == "docs"
+    assert ask_calls[0]["source_type"] == "documentation"
     assert ask_calls[0]["language"] == "markdown"
     assert ask_calls[0]["path_prefix"] == "docs/"
-    assert prepare_calls[0]["source_type"] == "docs"
+    assert prepare_calls[0]["source_type"] == "documentation"
     assert prepare_calls[0]["language"] == "markdown"
     assert prepare_calls[0]["path_prefix"] == "docs/"
 
