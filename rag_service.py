@@ -844,7 +844,7 @@ class RagService:
 
         return "\n\n---\n\n".join(chunks), sources
 
-
+    @staticmethod
     def enrich_messages(
         original_messages: list[
             dict[str, Any]

@@ -378,6 +378,17 @@ def test_build_context_includes_scores_and_source_metadata() -> None:
     ]
 
 
+def test_enrich_messages_accepts_instance_call() -> None:
+    messages = RagService.enrich_messages(
+        original_messages=[{"role": "user", "content": "question"}],
+        context="context chunk",
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "context chunk" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "question"}
+
+
 def test_public_search_entry_points_forward_filters(monkeypatch: pytest.MonkeyPatch) -> None:
     retrieve_calls: list[dict[str, object]] = []
     ask_calls: list[dict[str, object]] = []
