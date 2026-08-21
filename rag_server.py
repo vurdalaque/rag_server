@@ -17,6 +17,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from rag_bundle import BundleStore, BundleValidationError, stage_bundle
 
+from llm_params import apply_llm_defaults
 from rag_service import (
     LLM_MODEL,
     LLM_URL,
@@ -820,6 +821,7 @@ async def chat_completions(
     upstream_payload["messages"] = (
         enriched_messages
     )
+    upstream_payload = apply_llm_defaults(upstream_payload)
 
     if bool(body.get("stream", False)):
         return StreamingResponse(

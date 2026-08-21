@@ -13,6 +13,8 @@ import faiss
 import httpx
 import numpy as np
 
+from llm_params import apply_llm_defaults
+
 
 INDEX_FILE = Path(
     os.getenv(
@@ -1028,12 +1030,13 @@ class RagService:
         ) as client:
             response = await client.post(
                 LLM_URL,
-                json={
-                    "model": LLM_MODEL,
-                    "messages": messages,
-                    "stream": False,
-                    "temperature": 0.2,
-                },
+                json=apply_llm_defaults(
+                    {
+                        "model": LLM_MODEL,
+                        "messages": messages,
+                        "stream": False,
+                    }
+                ),
             )
 
             response.raise_for_status()

@@ -201,7 +201,18 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 |------------|--------------|------------|
 | `LLM_URL` | `http://127.0.0.1:8001/v1/chat/completions` | LLM для ask |
 | `LLM_MODEL` | `rag-assistant` | Имя модели |
+| `RAG_LLM_TEMPERATURE` | `0.7` | Sampling для Qwen3.8-27B (non-thinking) |
+| `RAG_LLM_TOP_P` | `0.8` | top_p по умолчанию |
+| `RAG_LLM_TOP_K` | `20` | LLM top_k (не путать с `RAG_TOP_K`) |
+| `RAG_LLM_PRESENCE_PENALTY` | `1.5` | presence_penalty по умолчанию |
+| `RAG_LLM_REPETITION_PENALTY` | `1.0` | repetition_penalty по умолчанию |
+| `RAG_LLM_ENABLE_THINKING` | `false` | Qwen thinking mode (`chat_template_kwargs`) |
+| `RAG_LLM_FORCE_DEFAULTS` | `false` | Перезаписывать sampling-параметры клиента |
 | `SEARXNG_URL` | `http://127.0.0.1:8003/search` | Web search |
+
+Для `/v1/chat/completions` и `ask_project` сервер подставляет эти значения, **если клиент их не передал**. Параметры клиента (`temperature`, `top_p`, …) сохраняются. Чтобы всегда применять серверные значения, установите `RAG_LLM_FORCE_DEFAULTS=true`.
+
+Дефолты соответствуют **non-thinking** режиму Qwen3.8-27B. Для thinking mode задайте, например: `RAG_LLM_ENABLE_THINKING=true`, `RAG_LLM_TEMPERATURE=1.0`, `RAG_LLM_TOP_P=0.95`, `RAG_LLM_PRESENCE_PENALTY=0.0`.
 
 ## Bundle contract
 
