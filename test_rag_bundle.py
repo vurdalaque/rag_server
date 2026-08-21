@@ -195,6 +195,16 @@ def make_rag_service(metadata: list[dict[str, object]], vectors: list[list[float
     return service
 
 
+def test_rerank_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RAG_RERANK_ENABLED", raising=False)
+    assert rag_service_module.env_bool("RAG_RERANK_ENABLED", False) is False
+
+
+def test_rerank_can_be_enabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAG_RERANK_ENABLED", "true")
+    assert rag_service_module.env_bool("RAG_RERANK_ENABLED", False) is True
+
+
 def metadata_item(
     file_name: str,
     source_type: str,
@@ -385,8 +395,48 @@ def test_enrich_messages_accepts_instance_call() -> None:
     )
 
     assert messages[0]["role"] == "system"
+    assert "You are a code assistant" in messages[0]["content"]
     assert "context chunk" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "question"}
+
+
+def test_enrich_messages_skips_rag_prompt_when_disabled() -> None:
+    messages = RagService.enrich_messages(
+        original_messages=[{"role": "user", "content": "question"}],
+        context="context chunk",
+        use_system_prompt=False,
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "You are a code assistant" not in messages[0]["content"]
+    assert "Retrieved Project sources:" in messages[0]["content"]
+    assert "context chunk" in messages[0]["content"]
+
+
+def test_enrich_messages_disabled_without_context_keeps_client_system() -> None:
+    messages = RagService.enrich_messages(
+        original_messages=[
+            {"role": "system", "content": "Custom system prompt"},
+            {"role": "user", "content": "question"},
+        ],
+        context="",
+        use_system_prompt=False,
+    )
+
+    assert messages == [
+        {"role": "system", "content": "Custom system prompt"},
+        {"role": "user", "content": "question"},
+    ]
+
+
+def test_enrich_messages_disabled_without_context_or_client_system() -> None:
+    messages = RagService.enrich_messages(
+        original_messages=[{"role": "user", "content": "question"}],
+        context="",
+        use_system_prompt=False,
+    )
+
+    assert messages == [{"role": "user", "content": "question"}]
 
 
 def test_public_search_entry_points_forward_filters(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -414,6 +464,7 @@ def test_public_search_entry_points_forward_filters(monkeypatch: pytest.MonkeyPa
                 "rag_source_type": "documentation",
                 "rag_language": "markdown",
                 "rag_path_prefix": "docs/",
+                "rag_use_system_prompt": False,
             }
 
     monkeypatch.setattr(rag_server.rag_service, "retrieve", retrieve)
@@ -435,6 +486,7 @@ def test_public_search_entry_points_forward_filters(monkeypatch: pytest.MonkeyPa
     assert prepare_calls[0]["source_type"] == "documentation"
     assert prepare_calls[0]["language"] == "markdown"
     assert prepare_calls[0]["path_prefix"] == "docs/"
+    assert prepare_calls[0]["use_system_prompt"] is False
 
 
 

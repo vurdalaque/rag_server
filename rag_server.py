@@ -83,11 +83,13 @@ mcp = FastMCP(
             "localhost:*",
             "127.0.0.1:*",
             "192.168.10.250:*",
+            "192.168.13.109:*",
         ],
         allowed_origins=[
             "http://localhost:*",
             "http://127.0.0.1:*",
             "http://192.168.10.250:*",
+            "192.168.13.109:*",
         ],
     ),
 )
@@ -759,6 +761,22 @@ async def chat_completions(
     source_type = body.pop("rag_source_type", None)
     language = body.pop("rag_language", None)
     path_prefix = body.pop("rag_path_prefix", None)
+    rag_use_system_prompt = body.pop(
+        "rag_use_system_prompt",
+        True,
+    )
+
+    if not isinstance(
+        rag_use_system_prompt,
+        bool,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "'rag_use_system_prompt' must be "
+                "a boolean"
+            ),
+        )
 
 
     try:
@@ -770,6 +788,7 @@ async def chat_completions(
                 source_type=source_type,
                 language=language,
                 path_prefix=path_prefix,
+                use_system_prompt=rag_use_system_prompt,
 
             )
         )

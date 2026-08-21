@@ -144,6 +144,28 @@ curl "http://localhost:8000/debug/search?query=ipc&source_type=code&language=cpp
 - `rag_source_type`
 - `rag_language`
 - `rag_path_prefix`
+- `rag_use_system_prompt` (по умолчанию `true`) — включать ли встроенный RAG system prompt
+
+Когда `rag_use_system_prompt: true` (поведение по умолчанию), сервер добавляет стандартные инструкции ассистента и retrieved context. Клиентские `system` сообщения по-прежнему сохраняются и объединяются с RAG-блоком.
+
+Когда `rag_use_system_prompt: false`, стандартные инструкции («You are a code assistant…») не добавляются, но retrieved context по-прежнему вставляется в system message (если найден). Если контекст пуст, RAG-блок не добавляется — остаются только клиентские `system` сообщения.
+
+Пример:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "radius-code",
+    "messages": [
+      {"role": "system", "content": "You are a helpful C++ expert."},
+      {"role": "user", "content": "How does IPC work?"}
+    ],
+    "rag_use_system_prompt": false,
+    "rag_source_type": "code",
+    "rag_path_prefix": "backend/sources/radius-ipc"
+  }'
+```
 
 ## Переменные окружения
 
@@ -170,7 +192,7 @@ curl "http://localhost:8000/debug/search?query=ipc&source_type=code&language=cpp
 | `EMBEDDING_URL` | `http://127.0.0.1:8002/v1/embeddings` | Embedding API |
 | `EMBEDDING_MODEL` | `qwen3-embedding` | Модель embeddings |
 | `RERANK_URL` | — | Rerank API (optional) |
-| `RAG_RERANK_ENABLED` | `true` | Включить rerank |
+| `RAG_RERANK_ENABLED` | `false` | Включить rerank (опционально) |
 | `RAG_SOURCE_TYPE_BOOSTS` | `{}` | JSON boost, напр. `{"documentation": 1.5}` |
 
 ### LLM и web

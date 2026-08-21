@@ -128,7 +128,7 @@ def env_bool(
 
 RERANK_ENABLED = env_bool(
     "RAG_RERANK_ENABLED",
-    True,
+    False,
 )
 
 # При ошибке reranker вернуть результаты FAISS,
@@ -850,6 +850,7 @@ class RagService:
             dict[str, Any]
         ],
         context: str,
+        use_system_prompt: bool = True,
     ) -> list[dict[str, Any]]:
         system_parts: list[str] = []
         other_messages: list[
@@ -869,64 +870,77 @@ class RagService:
                     message
                 )
 
-        if context:
-            retrieved_section = "\n".join(
-                [
-                    (
-                        "You are a code assistant "
-                        "for the Project project."
-                    ),
-                    (
-                        "Use the retrieved project "
-                        "sources when relevant."
-                    ),
-                    (
-                        "The sources are ordered by "
-                        "reranker relevance."
-                    ),
-                    (
-                        "Do not invent project APIs, "
-                        "files, types or behavior."
-                    ),
-                    (
-                        "If the supplied context is "
-                        "insufficient, say so explicitly."
-                    ),
-                    (
-                        "When referring to project code, "
-                        "mention the source file and symbol."
-                    ),
-                    "",
-                    "Retrieved Project sources:",
-                    "",
-                    context,
-                ]
+        if use_system_prompt:
+            if context:
+                retrieved_section = "\n".join(
+                    [
+                        (
+                            "You are a code assistant "
+                            "for the Project project."
+                        ),
+                        (
+                            "Use the retrieved project "
+                            "sources when relevant."
+                        ),
+                        (
+                            "The sources are ordered by "
+                            "reranker relevance."
+                        ),
+                        (
+                            "Do not invent project APIs, "
+                            "files, types or behavior."
+                        ),
+                        (
+                            "If the supplied context is "
+                            "insufficient, say so explicitly."
+                        ),
+                        (
+                            "When referring to project code, "
+                            "mention the source file and symbol."
+                        ),
+                        "",
+                        "Retrieved Project sources:",
+                        "",
+                        context,
+                    ]
+                )
+            else:
+                retrieved_section = "\n".join(
+                    [
+                        (
+                            "You are a code assistant "
+                            "for the Project project."
+                        ),
+                        (
+                            "No relevant Project source-code "
+                            "fragments were retrieved."
+                        ),
+                        (
+                            "Do not invent project APIs, "
+                            "files, types or behavior."
+                        ),
+                        (
+                            "State explicitly that the indexed "
+                            "source code is insufficient."
+                        ),
+                    ]
+                )
+            system_parts.append(
+                retrieved_section
             )
-        else:
-            retrieved_section = "\n".join(
-                [
-                    (
-                        "You are a code assistant "
-                        "for the Project project."
-                    ),
-                    (
-                        "No relevant Project source-code "
-                        "fragments were retrieved."
-                    ),
-                    (
-                        "Do not invent project APIs, "
-                        "files, types or behavior."
-                    ),
-                    (
-                        "State explicitly that the indexed "
-                        "source code is insufficient."
-                    ),
-                ]
+        elif context:
+            system_parts.append(
+                "\n".join(
+                    [
+                        "Retrieved Project sources:",
+                        "",
+                        context,
+                    ]
+                )
             )
 
-        system_parts.append(
-            retrieved_section
-        )
+        if not system_parts:
+            return other_messages
 
         return [
             {
@@ -946,6 +960,7 @@ class RagService:
         source_type: str | None = None,
         language: str | None = None,
         path_prefix: str | None = None,
+        use_system_prompt: bool = True,
 
     ) -> tuple[
         list[dict[str, Any]],
@@ -967,6 +982,7 @@ class RagService:
         enriched = self.enrich_messages(
             original_messages=messages,
             context=context,
+            use_system_prompt=use_system_prompt,
         )
 
         return enriched, sources
