@@ -60,6 +60,43 @@ chmod +x start.sh
 ./start.sh --port 8010 --env-file .env.local
 ```
 
+### tmux
+
+tmux запускает **non-interactive** shell: активный venv из prompt **не переносится**. Если `./start.sh` падает, сессия сразу закрывается (`[exited]`, `no sessions`).
+
+Сначала проверьте ошибку напрямую:
+
+```bash
+cd ~/rag_server
+./start.sh
+```
+
+Частые причины:
+
+- нет `.env` или пустой `RAG_ADMIN_TOKEN`
+- в tmux другой `python` без `uvicorn` / `faiss`
+
+**С uv** (рекомендуется) добавьте в `.env`:
+
+```bash
+RAG_USE_UV=true
+```
+
+Или укажите venv явно:
+
+```bash
+RAG_VENV=~/.venv
+```
+
+Запуск:
+
+```bash
+tmux new -d -s radius-server './start.sh'
+tmux attach -t radius-server
+```
+
+`start.sh` автоматически использует `uv run`, если `uv` в PATH и есть `pyproject.toml` (`RAG_USE_UV=auto` по умолчанию).
+
 Проверка:
 
 ```bash
