@@ -132,7 +132,8 @@ fi
 if ! run_python -c "import uvicorn" >/dev/null 2>&1; then
     echo "uvicorn is not installed." >&2
     if [[ "$USE_UV" == true ]]; then
-        echo "Install deps: uv sync" >&2
+        echo "Install deps: uv sync --active   # when using ~/.venv"
+        echo "            or: uv sync          # for project .venv"
     else
         echo "Install deps: pip install -r requirements.txt" >&2
         run_python -c "import sys; print(sys.executable)" >&2 || true

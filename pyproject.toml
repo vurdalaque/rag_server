@@ -24,6 +24,18 @@ dev = [
     "pytest",
 ]
 
+[tool.setuptools]
+packages = []
+py-modules = [
+    "llm_params",
+    "rag_bundle",
+    "rag_metrics",
+    "rag_proxy",
+    "rag_search",
+    "rag_server",
+    "rag_service",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

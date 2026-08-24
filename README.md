@@ -28,6 +28,13 @@ pip install -e ".[dev]"
 pip install -r requirements.txt
 ```
 
+С `uv` и venv в `~/.venv` (не в `.venv` проекта):
+
+```bash
+uv sync --active
+# или в .env: RAG_VENV=~/.venv
+```
+
 ## Быстрый старт
 
 ```powershell
