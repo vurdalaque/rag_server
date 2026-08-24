@@ -1,0 +1,8 @@
+scrape_configs:
+  - job_name: rag_server
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - spark.home:8000

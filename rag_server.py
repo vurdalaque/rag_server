@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -11,13 +12,30 @@ from typing import Any, AsyncIterator
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from rag_bundle import BundleStore, BundleValidationError, stage_bundle
 
 from llm_params import apply_llm_defaults
+from rag_metrics import (
+    HTTP_DURATION,
+    HTTP_REQUESTS,
+    METRICS_ENABLED,
+    METRICS_PATH,
+    dependency_probe_loop,
+    metrics_content_type,
+    metrics_payload,
+    normalize_handler_path,
+    record_bundle_activate,
+    record_bundle_rollback,
+    record_bundle_upload,
+    record_chat_completion,
+    track_dependency,
+    track_mcp_tool,
+    update_index_state,
+)
 from rag_service import (
     LLM_MODEL,
     LLM_URL,
@@ -130,6 +148,7 @@ def extract_query(
 
 
 @mcp.tool()
+@track_mcp_tool("search_project")
 async def search_project(
     query: str,
     top_k: int = 6,
@@ -200,6 +219,7 @@ async def search_project(
     }
 
 @mcp.tool()
+@track_mcp_tool("web_search")
 async def web_search(
     query: str,
     limit: int = 5,
@@ -251,12 +271,13 @@ async def web_search(
             timeout=timeout,
             follow_redirects=True,
         ) as client:
-            response = await client.get(
-                SEARXNG_URL,
-                params=params,
-                headers=headers,
-            )
-            response.raise_for_status()
+            with track_dependency("searxng"):
+                response = await client.get(
+                    SEARXNG_URL,
+                    params=params,
+                    headers=headers,
+                )
+                response.raise_for_status()
 
     except httpx.HTTPStatusError as error:
         raise RuntimeError(
@@ -340,6 +361,7 @@ async def web_search(
 
 
 @mcp.tool()
+@track_mcp_tool("ask_project")
 async def ask_project(
     question: str,
     top_k: int = 6,
@@ -365,6 +387,7 @@ async def ask_project(
 
 
 @mcp.tool()
+@track_mcp_tool("ping")
 async def ping() -> dict[str, Any]:
     """
     Check that the Project MCP server is reachable.
@@ -432,11 +455,13 @@ async def lifespan(_: FastAPI):
             print(
                 "RAG index not loaded; upload and activate a bundle via /admin/index/*"
             )
+            update_index_state(rag_service)
     else:
         load_bundle(active[0])
 
-    async with mcp.session_manager.run():
-        yield
+    async with dependency_probe_loop(SEARXNG_URL):
+        async with mcp.session_manager.run():
+            yield
 
 
 app = FastAPI(
@@ -454,6 +479,44 @@ app.add_middleware(
     expose_headers=["Mcp-Session-Id"],
 )
 
+
+@app.middleware("http")
+async def record_http_metrics(
+    request: Request,
+    call_next,
+):
+    if not METRICS_ENABLED:
+        return await call_next(request)
+
+    handler = normalize_handler_path(request.url.path)
+
+    if handler == METRICS_PATH:
+        return await call_next(request)
+
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start
+
+    HTTP_REQUESTS.labels(
+        handler=handler,
+        method=request.method,
+        status=str(response.status_code),
+    ).inc()
+    HTTP_DURATION.labels(
+        handler=handler,
+        method=request.method,
+    ).observe(duration)
+
+    return response
+
+
+if METRICS_ENABLED:
+    @app.get(METRICS_PATH)
+    async def metrics() -> Response:
+        return Response(
+            content=metrics_payload(),
+            media_type=metrics_content_type(),
+        )
 
 
 @app.get("/health")
@@ -523,6 +586,7 @@ async def upload_index(request: Request) -> dict[str, Any]:
     staging_dir = Path(os.getenv("RAG_STAGING_DIR", "rag_staging"))
     staging_dir.mkdir(parents=True, exist_ok=True)
     archive_path: Path | None = None
+    received = 0
 
     try:
         with tempfile.NamedTemporaryFile(
@@ -533,7 +597,6 @@ async def upload_index(request: Request) -> dict[str, Any]:
             delete=False,
         ) as archive:
             archive_path = Path(archive.name)
-            received = 0
 
             async for chunk in request.stream():
                 received += len(chunk)
@@ -548,12 +611,17 @@ async def upload_index(request: Request) -> dict[str, Any]:
 
         bundle_dir, manifest = stage_bundle(archive_path, staging_dir, max_size)
 
+    except HTTPException:
+        record_bundle_upload("error")
+        raise
     except BundleValidationError as error:
+        record_bundle_upload("error")
         raise HTTPException(status_code=400, detail=str(error)) from error
-
     finally:
         if archive_path is not None:
             archive_path.unlink(missing_ok=True)
+
+    record_bundle_upload("success", received)
 
     return {
         "status": "staged",
@@ -583,13 +651,17 @@ async def index_status(request: Request) -> dict[str, Any]:
 @app.post("/admin/index/activate/{staging_id}")
 async def activate_index(staging_id: str, request: Request) -> dict[str, Any]:
     require_admin(request)
+    start = time.perf_counter()
 
     try:
         path, manifest = bundle_store().activate(staging_id)
         load_bundle(path)
+        record_bundle_activate("success", time.perf_counter() - start)
     except BundleValidationError as error:
+        record_bundle_activate("error")
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
+        record_bundle_activate("error")
         raise HTTPException(status_code=500, detail=str(error)) from error
 
     return {
@@ -632,9 +704,12 @@ async def rollback_index(request: Request) -> dict[str, Any]:
     try:
         path, manifest = bundle_store().rollback()
         load_bundle(path)
+        record_bundle_rollback("success")
     except BundleValidationError as error:
+        record_bundle_rollback("error")
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
+        record_bundle_rollback("error")
         raise HTTPException(status_code=500, detail=str(error)) from error
 
     return {
@@ -780,6 +855,8 @@ async def chat_completions(
         )
 
 
+    stream = bool(body.get("stream", False))
+
     try:
         enriched_messages, sources = (
             await rag_service.prepare_messages(
@@ -795,6 +872,12 @@ async def chat_completions(
         )
 
     except httpx.RequestError as error:
+        record_chat_completion(
+            stream=stream,
+            outcome="error",
+            sources_count=0,
+            context_injected=False,
+        )
         raise HTTPException(
             status_code=502,
             detail=(
@@ -804,17 +887,30 @@ async def chat_completions(
         ) from error
 
     except httpx.HTTPStatusError as error:
+        record_chat_completion(
+            stream=stream,
+            outcome="error",
+            sources_count=0,
+            context_injected=False,
+        )
         raise HTTPException(
             status_code=error.response.status_code,
             detail=error.response.text,
         ) from error
 
     except Exception as error:
+        record_chat_completion(
+            stream=stream,
+            outcome="error",
+            sources_count=0,
+            context_injected=False,
+        )
         raise HTTPException(
             status_code=500,
             detail=str(error),
         ) from error
 
+    context_injected = bool(sources)
     upstream_payload = dict(body)
 
     upstream_payload["model"] = LLM_MODEL
@@ -823,7 +919,13 @@ async def chat_completions(
     )
     upstream_payload = apply_llm_defaults(upstream_payload)
 
-    if bool(body.get("stream", False)):
+    if stream:
+        record_chat_completion(
+            stream=True,
+            outcome="success",
+            sources_count=len(sources),
+            context_injected=context_injected,
+        )
         return StreamingResponse(
             upstream_stream(upstream_payload),
             media_type="text/event-stream",
@@ -840,24 +942,43 @@ async def chat_completions(
         async with httpx.AsyncClient(
             timeout=timeout,
         ) as client:
-            response = await client.post(
-                LLM_URL,
-                json=upstream_payload,
-            )
-            response.raise_for_status()
+            with track_dependency("llm"):
+                response = await client.post(
+                    LLM_URL,
+                    json=upstream_payload,
+                )
+                response.raise_for_status()
 
         result = response.json()
         result["rag_sources"] = sources
+        record_chat_completion(
+            stream=False,
+            outcome="success",
+            sources_count=len(sources),
+            context_injected=context_injected,
+        )
 
         return JSONResponse(result)
 
     except httpx.HTTPStatusError as error:
+        record_chat_completion(
+            stream=False,
+            outcome="error",
+            sources_count=len(sources),
+            context_injected=context_injected,
+        )
         raise HTTPException(
             status_code=error.response.status_code,
             detail=error.response.text,
         ) from error
 
     except httpx.RequestError as error:
+        record_chat_completion(
+            stream=False,
+            outcome="error",
+            sources_count=len(sources),
+            context_injected=context_injected,
+        )
         raise HTTPException(
             status_code=502,
             detail=(

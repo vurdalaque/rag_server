@@ -5,6 +5,7 @@ import math
 
 import os
 import re
+import time
 
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,17 @@ import httpx
 import numpy as np
 
 from llm_params import apply_llm_defaults
+from rag_metrics import (
+    BM25_DURATION,
+    FAISS_DURATION,
+    RERANK_DURATION,
+    record_context_chars,
+    record_retrieve_empty,
+    record_retrieve_result,
+    track_dependency,
+    track_duration,
+    update_index_state,
+)
 
 
 INDEX_FILE = Path(
@@ -226,6 +238,7 @@ class RagService:
         self._bm25_terms = []
         self._bm25_document_frequency = {}
         self._bm25_average_length = 0.0
+        update_index_state(self)
 
     def load_from_paths(self, index_file: Path, metadata_file: Path) -> None:
         if not index_file.exists():
@@ -243,6 +256,7 @@ class RagService:
         self.index = index
         self.metadata = metadata
         self._build_bm25_index()
+        update_index_state(self)
 
     @staticmethod
     def _load_metadata(
@@ -555,15 +569,16 @@ class RagService:
         client: httpx.AsyncClient,
         text: str,
     ) -> np.ndarray:
-        response = await client.post(
-            EMBEDDING_URL,
-            json={
-                "model": EMBEDDING_MODEL,
-                "input": [text],
-            },
-        )
+        with track_dependency("embedding"):
+            response = await client.post(
+                EMBEDDING_URL,
+                json={
+                    "model": EMBEDDING_MODEL,
+                    "input": [text],
+                },
+            )
 
-        response.raise_for_status()
+            response.raise_for_status()
 
         payload = response.json()
         data = payload.get("data")
@@ -623,20 +638,22 @@ class RagService:
             for candidate in candidates
         ]
 
-        response = await client.post(
-            RERANK_URL,
-            json={
-                "model": RERANK_MODEL,
-                "query": query,
-                "documents": documents,
-                "top_n": min(
-                    top_k,
-                    len(documents),
-                ),
-            },
-        )
+        with track_dependency("rerank"):
+            with track_duration(RERANK_DURATION):
+                response = await client.post(
+                    RERANK_URL,
+                    json={
+                        "model": RERANK_MODEL,
+                        "query": query,
+                        "documents": documents,
+                        "top_n": min(
+                            top_k,
+                            len(documents),
+                        ),
+                    },
+                )
 
-        response.raise_for_status()
+                response.raise_for_status()
 
         payload = response.json()
         raw_results = payload.get("results")
@@ -715,10 +732,13 @@ class RagService:
         language: str | None = None,
         path_prefix: str | None = None,
     ) -> list[dict[str, Any]]:
+        start = time.perf_counter()
         query = query.strip()
         if not query:
             raise ValueError("Query must not be empty")
         if self.index is None:
+            record_retrieve_empty("index_missing")
+            record_retrieve_result(0, False, time.perf_counter() - start)
             return []
         if any(value is not None and not isinstance(value, str) for value in (source_type, language, path_prefix)):
             raise ValueError("RAG filters must be strings")
@@ -731,12 +751,15 @@ class RagService:
             if self._matches_filters(item, source_type, language, path_prefix)
         }
         if not allowed_indices:
+            record_retrieve_empty("filtered")
+            record_retrieve_result(0, filters_active, time.perf_counter() - start)
             return []
 
         search_count = len(self.metadata) if filters_active else candidate_count
         async with httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT)) as client:
             vector = await self.get_embedding(client, query)
-            scores, indices = self.index.search(vector, search_count)
+            with track_duration(FAISS_DURATION):
+                scores, indices = self.index.search(vector, search_count)
             faiss_scores: dict[int, float] = {}
             faiss_ranks: dict[int, int] = {}
             for score, item_index in zip(scores[0], indices[0]):
@@ -749,11 +772,14 @@ class RagService:
                 if len(faiss_ranks) >= candidate_count:
                     break
 
-            bm25_scores = self._bm25_scores(query, allowed_indices)
+            with track_duration(BM25_DURATION):
+                bm25_scores = self._bm25_scores(query, allowed_indices)
             bm25_ranked = sorted(bm25_scores, key=bm25_scores.get, reverse=True)[:candidate_count]
             bm25_ranks = {item_index: rank for rank, item_index in enumerate(bm25_ranked, start=1)}
             candidate_indices = set(faiss_ranks) | set(bm25_ranks)
             if not candidate_indices:
+                record_retrieve_empty("no_candidates")
+                record_retrieve_result(0, filters_active, time.perf_counter() - start)
                 return []
 
             candidates: list[dict[str, Any]] = []
@@ -777,7 +803,13 @@ class RagService:
 
             candidates.sort(key=lambda candidate: candidate["hybrid_score"], reverse=True)
             if not RERANK_ENABLED:
-                return self._hybrid_fallback(candidates, limit)
+                results = self._hybrid_fallback(candidates, limit)
+                record_retrieve_result(
+                    len(results),
+                    filters_active,
+                    time.perf_counter() - start,
+                )
+                return results
 
             try:
                 reranked = await self.rerank(client, query, candidates, limit)
@@ -786,8 +818,15 @@ class RagService:
                         candidate["score"] = candidate["rerank_score"] * SOURCE_TYPE_BOOSTS.get(
                             str(candidate["source_type"]), 1.0
                         )
-                    return sorted(reranked, key=lambda candidate: candidate["score"], reverse=True)
+                    results = sorted(reranked, key=lambda candidate: candidate["score"], reverse=True)
+                    record_retrieve_result(
+                        len(results),
+                        filters_active,
+                        time.perf_counter() - start,
+                    )
+                    return results
                 if not RERANK_FALLBACK:
+                    record_retrieve_result(0, filters_active, time.perf_counter() - start)
                     return []
                 print("Reranker returned no results; falling back to hybrid ranking")
             except (httpx.HTTPError, RuntimeError, ValueError) as error:
@@ -795,7 +834,13 @@ class RagService:
                     raise
                 print(f"Rerank failed; falling back to hybrid: {error}")
 
-            return self._hybrid_fallback(candidates, limit)
+            results = self._hybrid_fallback(candidates, limit)
+            record_retrieve_result(
+                len(results),
+                filters_active,
+                time.perf_counter() - start,
+            )
+            return results
 
     @staticmethod
     def build_context(
@@ -844,7 +889,9 @@ class RagService:
                 "end_line": result["end_line"],
             })
 
-        return "\n\n---\n\n".join(chunks), sources
+        context = "\n\n---\n\n".join(chunks)
+        record_context_chars(len(context))
+        return context, sources
 
     @staticmethod
     def enrich_messages(
@@ -1028,18 +1075,19 @@ class RagService:
         async with httpx.AsyncClient(
             timeout=timeout,
         ) as client:
-            response = await client.post(
-                LLM_URL,
-                json=apply_llm_defaults(
-                    {
-                        "model": LLM_MODEL,
-                        "messages": messages,
-                        "stream": False,
-                    }
-                ),
-            )
+            with track_dependency("llm"):
+                response = await client.post(
+                    LLM_URL,
+                    json=apply_llm_defaults(
+                        {
+                            "model": LLM_MODEL,
+                            "messages": messages,
+                            "stream": False,
+                        }
+                    ),
+                )
 
-            response.raise_for_status()
+                response.raise_for_status()
 
         payload = response.json()
         choices = payload.get("choices")

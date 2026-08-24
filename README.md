@@ -251,6 +251,26 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 
 Дефолты соответствуют **non-thinking** режиму Qwen3.8-27B. Для thinking mode задайте, например: `RAG_LLM_ENABLE_THINKING=true`, `RAG_LLM_TEMPERATURE=1.0`, `RAG_LLM_TOP_P=0.95`, `RAG_LLM_PRESENCE_PENALTY=0.0`.
 
+### Metrics (VictoriaMetrics / Grafana)
+
+| Переменная | По умолчанию | Назначение |
+|------------|--------------|------------|
+| `RAG_METRICS_ENABLED` | `true` | Endpoint `/metrics` |
+| `RAG_METRICS_PATH` | `/metrics` | Путь exposition |
+| `RAG_METRICS_PROBE_ENABLED` | `true` | Background probe upstream deps |
+| `RAG_METRICS_PROBE_INTERVAL` | `30` | Интервал probe, секунды |
+
+Prometheus-совместимый endpoint: `GET /metrics`. Пример scrape config:
+`deploy/vmagent-scrape.example.yaml`. Список метрик для Grafana:
+`deploy/grafana-metrics-reference.md`.
+
+Ключевые метрики:
+
+- `rag_index_loaded`, `rag_documents_total`
+- `rag_dependency_up{service="embedding|llm|searxng"}`
+- `rag_dependency_errors_total`
+- `rag_mcp_tool_calls_total`, `rag_retrieve_duration_seconds`
+
 ## Bundle contract
 
 ZIP содержит ровно:
