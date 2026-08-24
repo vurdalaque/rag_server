@@ -28,12 +28,16 @@ pip install -e ".[dev]"
 pip install -r requirements.txt
 ```
 
-С `uv` и venv в `~/.venv` (не в `.venv` проекта):
+**С uv** (рекомендуется `RAG_VENV`, не `RAG_USE_UV` в tmux):
 
 ```bash
+# в .env
+RAG_VENV=~/.venv
+
 uv sync --active
-# или в .env: RAG_VENV=~/.venv
 ```
+
+`RAG_VENV` активирует venv напрямую — не нужен `uv` в PATH tmux. `RAG_USE_UV=true` в tmux часто ломает запуск, если `uv` не в PATH.
 
 ## Быстрый старт
 
@@ -83,16 +87,11 @@ cd ~/rag_server
 - нет `.env` или пустой `RAG_ADMIN_TOKEN`
 - в tmux другой `python` без `uvicorn` / `faiss`
 
-**С uv** (рекомендуется) добавьте в `.env`:
-
-```bash
-RAG_USE_UV=true
-```
-
-Или укажите venv явно:
+**С uv** — в `.env` задайте `RAG_VENV=~/.venv` (не `RAG_USE_UV`):
 
 ```bash
 RAG_VENV=~/.venv
+uv sync --active
 ```
 
 Запуск:
@@ -102,7 +101,18 @@ tmux new -d -s radius-server './start.sh'
 tmux attach -t radius-server
 ```
 
-`start.sh` автоматически использует `uv run`, если `uv` в PATH и есть `pyproject.toml` (`RAG_USE_UV=auto` по умолчанию).
+Если сессия сразу закрывается — запустите без tmux и посмотрите ошибку:
+
+```bash
+./start.sh
+```
+
+Или с логом:
+
+```bash
+tmux new -d -s radius-server './start.sh >>data/server.log 2>&1'
+tail -f data/server.log
+```
 
 Проверка:
 
