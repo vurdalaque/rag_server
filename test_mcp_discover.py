@@ -100,6 +100,8 @@ def test_mcp_server_discover_returns_modern_capabilities(
     result = payload["result"]
     assert "capabilities" in result
     assert "tools" in result["capabilities"]
+    assert "resources" in result["capabilities"]
+    assert "prompts" in result["capabilities"]
     assert "2026-07-28" in result.get("supportedVersions", [])
     assert result.get("cacheScope") == "public"
     assert result.get("ttlMs", 0) > 0
@@ -146,6 +148,22 @@ def test_mcp_server_discover_with_empty_params(
     payload = response.json()
     assert "result" in payload
     assert "2026-07-28" in payload["result"]["supportedVersions"]
+
+
+def test_mcp_discover_matches_initialize_capabilities(
+    mcp_client: TestClient,
+) -> None:
+    discover = mcp_client.post(
+        "/mcp/",
+        json=DISCOVER_BODY,
+        headers=MCP_HEADERS,
+    ).json()["result"]["capabilities"]
+    initialize = mcp_client.post(
+        "/mcp/",
+        json=INITIALIZE_BODY,
+        headers=MCP_HEADERS,
+    ).json()["result"]["capabilities"]
+    assert discover == initialize
 
 
 def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:

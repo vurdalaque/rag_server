@@ -16,8 +16,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from mcp.server.caching import CacheHint
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import DiscoverResult, RequestParams, ServerCapabilities, ToolsCapability
-from mcp_types.version import LATEST_HANDSHAKE_VERSION, LATEST_MODERN_VERSION
+from mcp.types import DiscoverResult, RequestParams, ServerCapabilities
+from mcp_types.version import LATEST_MODERN_VERSION
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rag_bundle import BundleStore, BundleValidationError, stage_bundle
@@ -1009,12 +1009,21 @@ async def _connector_discover(
     _ctx: Any,
     _params: RequestParams | None,
 ) -> DiscoverResult:
-    """ChatGPT-oriented discover: public cache, dual-era versions, tools only."""
+    """Match initialize capabilities/serverInfo so ChatGPT connector validation passes."""
+    init_options = mcp._lowlevel_server.create_initialization_options()
+    init_capabilities = init_options.capabilities
+    capabilities = ServerCapabilities(
+        experimental=init_capabilities.experimental,
+        prompts=init_capabilities.prompts,
+        resources=init_capabilities.resources,
+        tools=init_capabilities.tools,
+        logging=init_capabilities.logging,
+        completions=init_capabilities.completions,
+    )
     return DiscoverResult(
-        supported_versions=[MCP_DEFAULT_MODERN_VERSION, LATEST_HANDSHAKE_VERSION],
-        capabilities=ServerCapabilities(
-            tools=ToolsCapability(list_changed=False),
-        ),
+        supported_versions=[MCP_DEFAULT_MODERN_VERSION],
+        capabilities=capabilities,
+        instructions=init_options.instructions,
         result_type="complete",
         cache_scope="public",
         ttl_ms=3_600_000,
