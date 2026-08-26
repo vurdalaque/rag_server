@@ -109,7 +109,21 @@ def test_mcp_server_discover_returns_modern_capabilities(
     json.loads(response.content)
 
 
-def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:
+def test_mcp_server_discover_without_routing_headers(
+    mcp_client: TestClient,
+) -> None:
+    """Proxies may strip MCP-Protocol-Version; body _meta must still work."""
+    response = mcp_client.post(
+        "/mcp/",
+        json=DISCOVER_BODY,
+        headers=MCP_HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "result" in payload
+    assert payload["result"]["supportedVersions"] == ["2026-07-28"]
+
     init_response = mcp_client.post(
         "/mcp/",
         json=INITIALIZE_BODY,

@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rag_bundle import BundleStore, BundleValidationError, stage_bundle
 
@@ -475,7 +476,12 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["Mcp-Session-Id"],
+    expose_headers=[
+        "Mcp-Session-Id",
+        "MCP-Protocol-Version",
+        "Mcp-Method",
+        "Mcp-Name",
+    ],
 )
 
 
@@ -987,11 +993,84 @@ async def chat_completions(
         ) from error
 
 
-mcp_app = mcp.streamable_http_app(
-    streamable_http_path="/",
-    json_response=True,
-    stateless_http=True,
-    transport_security=MCP_TRANSPORT_SECURITY,
+MCP_PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion"
+
+
+def _upsert_scope_header(scope: Scope, name: str, value: str) -> None:
+    name_bytes = name.lower().encode("latin-1")
+    value_bytes = value.encode("latin-1")
+    headers = [
+        (key, item)
+        for key, item in scope.get("headers", [])
+        if key.lower() != name_bytes
+    ]
+    headers.append((name_bytes, value_bytes))
+    scope["headers"] = headers
+
+
+async def _read_request_body(receive: Receive) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        message: Message = await receive()
+        chunks.append(message.get("body", b""))
+        if not message.get("more_body", False):
+            break
+    return b"".join(chunks)
+
+
+class _BodyReplayReceive:
+    def __init__(self, receive: Receive, body: bytes) -> None:
+        self._receive = receive
+        self._body = body
+        self._done = False
+
+    async def __call__(self) -> Message:
+        if not self._done:
+            self._done = True
+            return {"type": "http.request", "body": self._body, "more_body": False}
+        return await self._receive()
+
+
+def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
+    """Inject MCP routing headers from JSON _meta when proxies strip them."""
+
+    async def middleware(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method") != "POST":
+            await app(scope, receive, send)
+            return
+
+        body = await _read_request_body(receive)
+        replay_receive = _BodyReplayReceive(receive, body)
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            await app(scope, replay_receive, send)
+            return
+
+        params = payload.get("params")
+        meta = params.get("_meta") if isinstance(params, dict) else None
+        method = payload.get("method")
+
+        if isinstance(meta, dict):
+            protocol_version = meta.get(MCP_PROTOCOL_VERSION_META)
+            if isinstance(protocol_version, str):
+                _upsert_scope_header(scope, "mcp-protocol-version", protocol_version)
+            if isinstance(method, str):
+                _upsert_scope_header(scope, "mcp-method", method)
+
+        await app(scope, replay_receive, send)
+
+    return middleware
+
+
+mcp_app = wrap_mcp_modern_headers(
+    mcp.streamable_http_app(
+        streamable_http_path="/",
+        json_response=True,
+        stateless_http=True,
+        transport_security=MCP_TRANSPORT_SECURITY,
+    )
 )
 app.mount("/mcp", mcp_app)
 
