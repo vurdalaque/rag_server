@@ -13,7 +13,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from rag_bundle import BundleStore, BundleValidationError, stage_bundle
@@ -91,26 +91,25 @@ def load_bundle(path: Path) -> None:
         path / "rag_metadata.jsonl",
     )
 
-mcp = FastMCP(
+MCP_TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        "localhost:*",
+        "127.0.0.1:*",
+        "192.168.10.250:*",
+        "192.168.13.250:*",
+    ],
+    allowed_origins=[
+        "http://localhost:*",
+        "http://127.0.0.1:*",
+        "http://192.168.10.250:*",
+        "http://192.168.13.250:*",
+    ],
+)
+
+mcp = MCPServer(
     name="Project Knowledge Gateway",
-    stateless_http=True,
-    json_response=True,
-    streamable_http_path="/",
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=[
-            "localhost:*",
-            "127.0.0.1:*",
-            "192.168.10.250:*",
-            "192.168.13.250:*",
-        ],
-        allowed_origins=[
-            "http://localhost:*",
-            "http://127.0.0.1:*",
-            "http://192.168.10.250:*",
-            "192.168.13.250:*",
-        ],
-    ),
+    version="1.2.0",
 )
 
 
@@ -988,6 +987,11 @@ async def chat_completions(
         ) from error
 
 
-mcp_app = mcp.streamable_http_app()
+mcp_app = mcp.streamable_http_app(
+    streamable_http_path="/",
+    json_response=True,
+    stateless_http=True,
+    transport_security=MCP_TRANSPORT_SECURITY,
+)
 app.mount("/mcp", mcp_app)
 
