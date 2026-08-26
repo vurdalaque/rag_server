@@ -13,8 +13,11 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from mcp.server.caching import CacheHint
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import DiscoverResult, RequestParams, ServerCapabilities, ToolsCapability
+from mcp_types.version import LATEST_HANDSHAKE_VERSION, LATEST_MODERN_VERSION
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rag_bundle import BundleStore, BundleValidationError, stage_bundle
@@ -111,6 +114,10 @@ MCP_TRANSPORT_SECURITY = TransportSecuritySettings(
 mcp = MCPServer(
     name="Project Knowledge Gateway",
     version="1.2.0",
+    cache_hints={
+        "server/discover": CacheHint(scope="public", ttl_ms=3_600_000),
+        "tools/list": CacheHint(scope="public", ttl_ms=3_600_000),
+    },
 )
 
 
@@ -994,6 +1001,73 @@ async def chat_completions(
 
 
 MCP_PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion"
+MCP_CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"
+MCP_DEFAULT_MODERN_VERSION = LATEST_MODERN_VERSION
+
+
+async def _connector_discover(
+    _ctx: Any,
+    _params: RequestParams | None,
+) -> DiscoverResult:
+    """ChatGPT-oriented discover: public cache, dual-era versions, tools only."""
+    return DiscoverResult(
+        supported_versions=[MCP_DEFAULT_MODERN_VERSION, LATEST_HANDSHAKE_VERSION],
+        capabilities=ServerCapabilities(
+            tools=ToolsCapability(list_changed=False),
+        ),
+        result_type="complete",
+        cache_scope="public",
+        ttl_ms=3_600_000,
+    )
+
+
+mcp._lowlevel_server.add_request_handler(
+    "server/discover",
+    RequestParams,
+    _connector_discover,
+)
+
+
+def _normalize_modern_mcp_payload(
+    payload: dict[str, Any],
+    scope: Scope,
+) -> bool:
+    method = payload.get("method")
+    if not isinstance(method, str):
+        return False
+
+    header_values = {
+        key.decode("latin-1").lower(): value.decode("latin-1")
+        for key, value in scope.get("headers", [])
+    }
+    has_modern_header = "mcp-protocol-version" in header_values
+    if method != "server/discover" and not has_modern_header:
+        return False
+
+    protocol_version = header_values.get(
+        "mcp-protocol-version",
+        MCP_DEFAULT_MODERN_VERSION,
+    )
+
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        params = {}
+        payload["params"] = params
+
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        params["_meta"] = meta
+
+    changed = False
+    if meta.get(MCP_PROTOCOL_VERSION_META) != protocol_version:
+        meta[MCP_PROTOCOL_VERSION_META] = protocol_version
+        changed = True
+    if MCP_CLIENT_CAPABILITIES_META not in meta:
+        meta[MCP_CLIENT_CAPABILITIES_META] = {}
+        changed = True
+
+    return changed
 
 
 def _upsert_scope_header(scope: Scope, name: str, value: str) -> None:
@@ -1047,6 +1121,14 @@ def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
         except json.JSONDecodeError:
             await app(scope, replay_receive, send)
             return
+
+        if not isinstance(payload, dict):
+            await app(scope, replay_receive, send)
+            return
+
+        if _normalize_modern_mcp_payload(payload, scope):
+            body = json.dumps(payload).encode("utf-8")
+            replay_receive = _BodyReplayReceive(receive, body)
 
         params = payload.get("params")
         meta = params.get("_meta") if isinstance(params, dict) else None

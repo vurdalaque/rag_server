@@ -101,6 +101,8 @@ def test_mcp_server_discover_returns_modern_capabilities(
     assert "capabilities" in result
     assert "tools" in result["capabilities"]
     assert "2026-07-28" in result.get("supportedVersions", [])
+    assert result.get("cacheScope") == "public"
+    assert result.get("ttlMs", 0) > 0
     server_info = result.get("_meta", {}).get(
         "io.modelcontextprotocol/serverInfo",
         {},
@@ -122,8 +124,31 @@ def test_mcp_server_discover_without_routing_headers(
     assert response.status_code == 200
     payload = response.json()
     assert "result" in payload
-    assert payload["result"]["supportedVersions"] == ["2026-07-28"]
+    assert "2026-07-28" in payload["result"]["supportedVersions"]
+    assert payload["result"]["cacheScope"] == "public"
 
+
+def test_mcp_server_discover_with_empty_params(
+    mcp_client: TestClient,
+) -> None:
+    response = mcp_client.post(
+        "/mcp/",
+        json={
+            "jsonrpc": "2.0",
+            "id": "openai-mcp-discover",
+            "method": "server/discover",
+            "params": {},
+        },
+        headers=MCP_HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "result" in payload
+    assert "2026-07-28" in payload["result"]["supportedVersions"]
+
+
+def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:
     init_response = mcp_client.post(
         "/mcp/",
         json=INITIALIZE_BODY,
