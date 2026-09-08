@@ -162,6 +162,7 @@ async def search_project(
     source_type: str | None = None,
     language: str | None = None,
     path_prefix: str | None = None,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     """
     Search the indexed Project project source code.
@@ -182,6 +183,7 @@ async def search_project(
         source_type=source_type,
         language=language,
         path_prefix=path_prefix,
+        repo=repo,
     )
 
     if not rag_service.index_loaded:
@@ -375,6 +377,7 @@ async def ask_project(
     source_type: str | None = None,
     language: str | None = None,
     path_prefix: str | None = None,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     """
     Answer a question about the Project project using
@@ -389,6 +392,7 @@ async def ask_project(
         source_type=source_type,
         language=language,
         path_prefix=path_prefix,
+        repo=repo,
     )
 
 
@@ -794,6 +798,7 @@ async def debug_search(
     source_type: str | None = None,
     language: str | None = None,
     path_prefix: str | None = None,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     results = await rag_service.retrieve(
         query=query,
@@ -801,6 +806,7 @@ async def debug_search(
         source_type=source_type,
         language=language,
         path_prefix=path_prefix,
+        repo=repo,
     )
 
     return {
@@ -849,6 +855,7 @@ async def chat_completions(
     source_type = body.pop("rag_source_type", None)
     language = body.pop("rag_language", None)
     path_prefix = body.pop("rag_path_prefix", None)
+    repo = body.pop("rag_repo", None)
     rag_use_system_prompt = body.pop(
         "rag_use_system_prompt",
         True,
@@ -878,6 +885,7 @@ async def chat_completions(
                 source_type=source_type,
                 language=language,
                 path_prefix=path_prefix,
+                repo=repo,
                 use_system_prompt=rag_use_system_prompt,
 
             )

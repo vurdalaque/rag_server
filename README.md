@@ -178,23 +178,25 @@ curl -X POST http://localhost:8000/admin/index/rollback \
 ### Debug API
 
 ```bash
-curl "http://localhost:8000/debug/search?query=ipc&source_type=code&language=cpp&path_prefix=backend/sources/radius-ipc&top_k=5"
+curl "http://localhost:8000/debug/search?query=ipc&repo=radius&source_type=code&language=cpp&path_prefix=backend/sources/radius-ipc&top_k=5"
 ```
 
 ### Фильтры
 
 | Параметр | Описание |
 |----------|----------|
+| `repo` | Логическое имя репозитория из `source_roots` (`radius`, `radius-doc`) |
 | `source_type` | `code` или `documentation` |
 | `language` | `python`, `cpp`, `markdown`, … |
-| `path_prefix` | Абсолютный префикс или относительный сегмент пути (`backend/sources/radius-ipc`) |
+| `path_prefix` | Относительный префикс пути внутри репозитория (`fusion/`, `backend/sources/radius-ipc`) |
 
-`path_prefix` работает и с абсолютными путями в metadata (`D:/projects/...`).
+Результаты поиска содержат `repo`, `file`, `start_line`, `end_line`, `git_url`.
 
 ### OpenAI chat completions
 
 В теле запроса можно передать:
 
+- `rag_repo`
 - `rag_source_type`
 - `rag_language`
 - `rag_path_prefix`

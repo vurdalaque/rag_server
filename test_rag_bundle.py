@@ -206,19 +206,27 @@ def test_rerank_can_be_enabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def metadata_item(
+    repo: str,
     file_name: str,
     source_type: str,
     language: str,
     code: str,
+    start_line: int = 1,
+    end_line: int = 2,
 ) -> dict[str, object]:
     return {
+        "repo": repo,
         "file": file_name,
         "source_type": source_type,
         "language": language,
         "full_name": file_name,
         "detail": "",
-        "start_line": 1,
-        "end_line": 2,
+        "start_line": start_line,
+        "end_line": end_line,
+        "git_url": (
+            f"https://gitlab.example.com/{repo}/-/blob/abc123/"
+            f"{file_name}#L{start_line}-L{end_line}"
+        ),
         "code": code,
     }
 
@@ -228,9 +236,9 @@ def test_retrieve_applies_source_type_language_and_path_prefix_filters(
 ) -> None:
     service = make_rag_service(
         [
-            metadata_item("src/main.py", "code", "python", "alpha"),
-            metadata_item("docs/guide.md", "documentation", "markdown", "alpha"),
-            metadata_item("src/test_main.py", "code", "python", "alpha"),
+            metadata_item("radius", "src/main.py", "code", "python", "alpha"),
+            metadata_item("radius-doc", "docs/guide.md", "documentation", "markdown", "alpha"),
+            metadata_item("radius", "src/test_main.py", "code", "python", "alpha"),
         ],
         [[1.0, 0.0], [0.9, 0.1], [0.8, 0.2]],
     )
@@ -250,28 +258,27 @@ def test_retrieve_applies_source_type_language_and_path_prefix_filters(
     assert {result["file"] for result in source} == {"src/main.py", "src/test_main.py"}
 
 
-def test_path_matches_supports_relative_prefix_in_absolute_paths() -> None:
-    file_name = "D:/projects/radius/backend/sources/radius-ipc/src/ipc_service.cpp"
-
-    assert RagService._path_matches(file_name, "backend/sources/radius-ipc")
-    assert RagService._path_matches(file_name, "backend\\sources\\radius-ipc")
-    assert RagService._path_matches(file_name, "D:/projects/radius/backend/sources/radius-ipc")
-    assert not RagService._path_matches(file_name, "frontend/src")
+def test_path_matches_relative_prefix() -> None:
+    assert RagService._path_matches("backend/sources/radius-ipc/src/ipc_service.cpp", "backend/sources/radius-ipc")
+    assert RagService._path_matches("backend/sources/radius-ipc/src/ipc_service.cpp", "backend\\sources\\radius-ipc")
+    assert not RagService._path_matches("frontend/src/main.ts", "backend/sources/radius-ipc")
 
 
-def test_retrieve_matches_relative_path_prefix_in_absolute_metadata(
+def test_retrieve_matches_relative_path_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = make_rag_service(
         [
             metadata_item(
-                "D:/projects/radius/backend/sources/radius-ipc/src/ipc_service.cpp",
+                "radius",
+                "backend/sources/radius-ipc/src/ipc_service.cpp",
                 "code",
                 "cpp",
                 "ipc service",
             ),
             metadata_item(
-                "D:/projects/radius/frontend/src/main.ts",
+                "radius",
+                "frontend/src/main.ts",
                 "code",
                 "typescript",
                 "frontend main",
@@ -296,8 +303,31 @@ def test_retrieve_matches_relative_path_prefix_in_absolute_metadata(
     )
 
     assert [result["file"] for result in results] == [
-        "D:/projects/radius/backend/sources/radius-ipc/src/ipc_service.cpp"
+        "backend/sources/radius-ipc/src/ipc_service.cpp"
     ]
+    assert results[0]["git_url"].endswith("ipc_service.cpp#L1-L2")
+
+
+def test_retrieve_filters_by_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = make_rag_service(
+        [
+            metadata_item("radius", "src/main.py", "code", "python", "code hit"),
+            metadata_item("radius-doc", "fusion/AGENTS.md", "documentation", "markdown", "doc hit"),
+        ],
+        [[1.0, 0.0], [0.0, 1.0]],
+    )
+
+    async def embedding(*_: object) -> np.ndarray:
+        return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(service, "get_embedding", embedding)
+    monkeypatch.setattr(rag_service_module, "RERANK_ENABLED", False)
+
+    results = asyncio.run(service.retrieve("hit", repo="radius-doc"))
+
+    assert len(results) == 1
+    assert results[0]["repo"] == "radius-doc"
+    assert results[0]["file"] == "fusion/AGENTS.md"
 
 
 def test_retrieve_applies_source_type_boost_to_hybrid_ranking(
@@ -305,8 +335,8 @@ def test_retrieve_applies_source_type_boost_to_hybrid_ranking(
 ) -> None:
     service = make_rag_service(
         [
-            metadata_item("src/main.py", "code", "python", "other"),
-            metadata_item("docs/guide.md", "documentation", "markdown", "needle"),
+            metadata_item("radius", "src/main.py", "code", "python", "other"),
+            metadata_item("radius-doc", "docs/guide.md", "documentation", "markdown", "needle"),
         ],
         [[1.0, 0.0], [0.9, 0.1]],
     )
@@ -329,9 +359,9 @@ def test_retrieve_combines_bm25_and_faiss_candidates(
 ) -> None:
     service = make_rag_service(
         [
-            metadata_item("src/main.py", "code", "python", "other"),
-            metadata_item("src/near.py", "code", "python", "other"),
-            metadata_item("docs/needle.md", "documentation", "markdown", "needle needle"),
+            metadata_item("radius", "src/main.py", "code", "python", "other"),
+            metadata_item("radius", "src/near.py", "code", "python", "other"),
+            metadata_item("radius-doc", "docs/needle.md", "documentation", "markdown", "needle needle"),
         ],
         [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]],
     )
@@ -358,9 +388,11 @@ def test_build_context_includes_scores_and_source_metadata() -> None:
                 "rerank_score": 0.8,
                 "faiss_score": 0.7,
                 "bm25_score": 1.2,
+                "repo": "radius-doc",
                 "source_type": "documentation",
                 "language": "markdown",
                 "file": "docs/guide.md",
+                "git_url": "https://gitlab.example.com/radius-doc/-/blob/abc/docs/guide.md#L1-L2",
                 "symbol": "guide",
                 "signature": "",
                 "start_line": 1,
@@ -373,17 +405,20 @@ def test_build_context_includes_scores_and_source_metadata() -> None:
     assert "Rerank relevance: 0.800000" in context
     assert "FAISS similarity: 0.700000" in context
     assert "BM25 score: 1.200000" in context
-    assert "Source type: documentation" in context
+    assert "Repo: radius-doc" in context
+    assert "URL: https://gitlab.example.com/radius-doc/-/blob/abc/docs/guide.md#L1-L2" in context
     assert sources == [
         {
             "score": 0.9,
             "rerank_score": 0.8,
             "faiss_score": 0.7,
+            "repo": "radius-doc",
             "file": "docs/guide.md",
             "source_type": "documentation",
             "symbol": "guide",
             "start_line": 1,
             "end_line": 2,
+            "git_url": "https://gitlab.example.com/radius-doc/-/blob/abc/docs/guide.md#L1-L2",
         }
     ]
 

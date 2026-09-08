@@ -342,29 +342,16 @@ class RagService:
 
     @staticmethod
     def _path_matches(file_name: str, path_prefix: str) -> bool:
-        normalized_file = RagService._normalize_path(file_name).lower()
+        normalized_file = RagService._normalize_path(file_name).strip("/").lower()
         prefix = RagService._normalize_path(path_prefix).strip("/").lower()
 
         if not prefix:
             return True
 
-        if normalized_file.startswith(prefix):
+        if normalized_file == prefix:
             return True
 
-        if normalized_file.startswith(f"/{prefix}"):
-            return True
-
-        file_segments = [segment for segment in normalized_file.split("/") if segment]
-        prefix_segments = [segment for segment in prefix.split("/") if segment]
-
-        if not prefix_segments:
-            return True
-
-        for index in range(len(file_segments) - len(prefix_segments) + 1):
-            if file_segments[index:index + len(prefix_segments)] == prefix_segments:
-                return True
-
-        return False
+        return normalized_file.startswith(f"{prefix}/")
 
     @staticmethod
     def _matches_filters(
@@ -372,7 +359,11 @@ class RagService:
         source_type: str | None,
         language: str | None,
         path_prefix: str | None,
+        repo: str | None,
     ) -> bool:
+        if repo is not None and item.get("repo", "") != repo:
+            return False
+
         if source_type is not None and item.get("source_type", "code") != source_type:
             return False
 
@@ -486,8 +477,8 @@ class RagService:
             "score": faiss_score,
             "faiss_score": faiss_score,
             "rerank_score": None,
+            "repo": item.get("repo", ""),
             "source_type": item.get("source_type", "code"),
-
             "file": item.get("file", ""),
             "language": item.get(
                 "language",
@@ -508,6 +499,7 @@ class RagService:
             "end_line": item.get(
                 "end_line"
             ),
+            "git_url": item.get("git_url", ""),
             "code": item.get(
                 "code",
                 "",
@@ -536,7 +528,10 @@ class RagService:
                     "Source type: "
                     f"{candidate.get('source_type', 'code')}"
                 ),
-
+                (
+                    "Repo: "
+                    f"{candidate.get('repo', '')}"
+                ),
                 (
                     "File: "
                     f"{candidate.get('file', '')}"
@@ -731,6 +726,7 @@ class RagService:
         source_type: str | None = None,
         language: str | None = None,
         path_prefix: str | None = None,
+        repo: str | None = None,
     ) -> list[dict[str, Any]]:
         start = time.perf_counter()
         query = query.strip()
@@ -740,15 +736,21 @@ class RagService:
             record_retrieve_empty("index_missing")
             record_retrieve_result(0, False, time.perf_counter() - start)
             return []
-        if any(value is not None and not isinstance(value, str) for value in (source_type, language, path_prefix)):
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in (source_type, language, path_prefix, repo)
+        ):
             raise ValueError("RAG filters must be strings")
 
         limit = self._normalize_top_k(top_k)
-        filters_active = any(value is not None for value in (source_type, language, path_prefix))
+        filters_active = any(
+            value is not None
+            for value in (source_type, language, path_prefix, repo)
+        )
         candidate_count = self._candidate_count(limit) if RERANK_ENABLED else limit
         allowed_indices = {
             item_index for item_index, item in enumerate(self.metadata)
-            if self._matches_filters(item, source_type, language, path_prefix)
+            if self._matches_filters(item, source_type, language, path_prefix, repo)
         }
         if not allowed_indices:
             record_retrieve_empty("filtered")
@@ -862,9 +864,11 @@ class RagService:
             chunk = "\n".join([
                 f"[Source {position}]",
                 *score_lines,
+                f"Repo: {result.get('repo', '')}",
                 f"Source type: {result.get('source_type', 'code')}",
                 f"Language: {result['language']}",
                 f"File: {result['file']}",
+                f"URL: {result.get('git_url', '')}",
                 f"Symbol: {result['symbol']}",
                 f"Signature: {result['signature']}",
                 f"Lines: {result['start_line']}-{result['end_line']}",
@@ -882,11 +886,13 @@ class RagService:
                 "score": result["score"],
                 "rerank_score": result.get("rerank_score"),
                 "faiss_score": result.get("faiss_score"),
+                "repo": result.get("repo", ""),
                 "file": result["file"],
                 "source_type": result.get("source_type", "code"),
                 "symbol": result["symbol"],
                 "start_line": result["start_line"],
                 "end_line": result["end_line"],
+                "git_url": result.get("git_url", ""),
             })
 
         context = "\n\n---\n\n".join(chunks)
@@ -1009,6 +1015,7 @@ class RagService:
         source_type: str | None = None,
         language: str | None = None,
         path_prefix: str | None = None,
+        repo: str | None = None,
         use_system_prompt: bool = True,
 
     ) -> tuple[
@@ -1020,6 +1027,7 @@ class RagService:
             source_type=source_type,
             language=language,
             path_prefix=path_prefix,
+            repo=repo,
 
             top_k=top_k,
         )
@@ -1043,6 +1051,7 @@ class RagService:
         source_type: str | None = None,
         language: str | None = None,
         path_prefix: str | None = None,
+        repo: str | None = None,
 
     ) -> dict[str, Any]:
         results = await self.retrieve(
@@ -1050,6 +1059,7 @@ class RagService:
             source_type=source_type,
             language=language,
             path_prefix=path_prefix,
+            repo=repo,
 
             top_k=top_k,
         )
