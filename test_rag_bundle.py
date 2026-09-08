@@ -18,7 +18,7 @@ import rag_server
 from rag_bundle import BUNDLE_FILES, BundleValidationError, file_sha256, stage_bundle
 
 
-def make_bundle(tmp_path: Path, corrupt_checksum: bool = False) -> Path:
+def make_bundle(tmp_path: Path, corrupt_checksum: bool = False, format_version: int = 1) -> Path:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     index_path = source_dir / "rag_index.faiss"
@@ -38,19 +38,28 @@ def make_bundle(tmp_path: Path, corrupt_checksum: bool = False) -> Path:
     if corrupt_checksum:
         checksums[metadata_path.name] = "0" * 64
 
-    manifest_path.write_text(
-        json.dumps(
+    manifest_payload: dict[str, object] = {
+        "format_version": format_version,
+        "index_file": index_path.name,
+        "metadata_file": metadata_path.name,
+        "checksums": checksums,
+        "document_count": 1,
+        "dimensions": 2,
+        "embedding_model": "test-model",
+        "built_at": "2026-07-26T00:00:00+00:00",
+    }
+    if format_version == 2:
+        manifest_payload["source_roots"] = [
             {
-                "format_version": 1,
-                "index_file": index_path.name,
-                "metadata_file": metadata_path.name,
-                "checksums": checksums,
-                "document_count": 1,
-                "dimensions": 2,
-                "embedding_model": "test-model",
-                "built_at": "2026-07-26T00:00:00+00:00",
+                "repo": "radius",
+                "path": "/tmp/radius",
+                "git_commit": "abc123",
+                "git_remote": "https://gitlab.example.com/org/radius.git",
             }
-        ),
+        ]
+
+    manifest_path.write_text(
+        json.dumps(manifest_payload),
         encoding="utf-8",
     )
 
@@ -73,6 +82,18 @@ def test_stage_bundle_accepts_valid_bundle(tmp_path: Path) -> None:
     assert {path.name for path in bundle_dir.iterdir()} == BUNDLE_FILES
     assert manifest["document_count"] == 1
     assert manifest["dimensions"] == 2
+
+
+def test_stage_bundle_accepts_format_version_2(tmp_path: Path) -> None:
+    bundle_dir, manifest = stage_bundle(
+        make_bundle(tmp_path, format_version=2),
+        tmp_path / "staging",
+        1024 * 1024,
+    )
+
+    assert manifest["format_version"] == 2
+    assert manifest["source_roots"][0]["repo"] == "radius"
+    assert {path.name for path in bundle_dir.iterdir()} == BUNDLE_FILES
 
 
 def test_stage_bundle_removes_invalid_bundle(tmp_path: Path) -> None:

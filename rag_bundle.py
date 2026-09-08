@@ -15,6 +15,7 @@ import faiss
 
 
 BUNDLE_FILES = {"rag_index.faiss", "rag_metadata.jsonl", "rag_manifest.json"}
+SUPPORTED_MANIFEST_VERSIONS = frozenset({1, 2})
 
 
 class BundleValidationError(ValueError):
@@ -168,6 +169,26 @@ def _require_int(manifest: dict[str, Any], name: str, minimum: int) -> int:
     return value
 
 
+def _validate_source_roots(manifest: dict[str, Any]) -> None:
+    source_roots = manifest.get("source_roots")
+    if source_roots is None:
+        return
+
+    if not isinstance(source_roots, list) or not source_roots:
+        raise BundleValidationError("Manifest source_roots is invalid")
+
+    for index, entry in enumerate(source_roots, start=1):
+        if not isinstance(entry, dict):
+            raise BundleValidationError(f"Manifest source_roots[{index}] is invalid")
+
+        for field in ("repo", "path", "git_commit", "git_remote"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise BundleValidationError(
+                    f"Manifest source_roots[{index}].{field} is invalid"
+                )
+
+
 def validate_staged_bundle(path: Path) -> dict[str, Any]:
     """Проверяет распакованный bundle и возвращает manifest."""
     manifest_path = path / "rag_manifest.json"
@@ -180,8 +201,12 @@ def validate_staged_bundle(path: Path) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise BundleValidationError("Manifest must be a JSON object")
 
-    if manifest.get("format_version") != 1:
+    format_version = manifest.get("format_version")
+    if format_version not in SUPPORTED_MANIFEST_VERSIONS:
         raise BundleValidationError("Unsupported manifest format version")
+
+    if format_version == 2:
+        _validate_source_roots(manifest)
 
     if manifest.get("index_file") != "rag_index.faiss":
         raise BundleValidationError("Manifest index_file is invalid")
