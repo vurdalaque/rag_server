@@ -169,6 +169,49 @@ def _require_int(manifest: dict[str, Any], name: str, minimum: int) -> int:
     return value
 
 
+def _require_nonempty_str(
+    entry: dict[str, Any],
+    field: str,
+    index: int,
+) -> None:
+    value = entry.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise BundleValidationError(
+            f"Manifest source_roots[{index}].{field} is invalid"
+        )
+
+
+def _validate_git_source_root(entry: dict[str, Any], index: int) -> None:
+    for field in ("repo", "path", "git_commit", "git_remote"):
+        _require_nonempty_str(entry, field, index)
+
+
+def _validate_manifest_source_root(entry: dict[str, Any], index: int) -> None:
+    for field in ("repo", "path", "snapshot_kind", "source_kind", "manifest"):
+        _require_nonempty_str(entry, field, index)
+
+    if entry.get("snapshot_kind") != "manifest":
+        raise BundleValidationError(
+            f"Manifest source_roots[{index}].snapshot_kind is invalid"
+        )
+
+    synced_at = entry.get("synced_at")
+    if synced_at is not None and (
+        not isinstance(synced_at, str) or not synced_at.strip()
+    ):
+        raise BundleValidationError(
+            f"Manifest source_roots[{index}].synced_at is invalid"
+        )
+
+    file_count = entry.get("file_count")
+    if file_count is not None and (
+        isinstance(file_count, bool) or not isinstance(file_count, int) or file_count < 0
+    ):
+        raise BundleValidationError(
+            f"Manifest source_roots[{index}].file_count is invalid"
+        )
+
+
 def _validate_source_roots(manifest: dict[str, Any]) -> None:
     source_roots = manifest.get("source_roots")
     if source_roots is None:
@@ -181,12 +224,15 @@ def _validate_source_roots(manifest: dict[str, Any]) -> None:
         if not isinstance(entry, dict):
             raise BundleValidationError(f"Manifest source_roots[{index}] is invalid")
 
-        for field in ("repo", "path", "git_commit", "git_remote"):
-            value = entry.get(field)
-            if not isinstance(value, str) or not value.strip():
-                raise BundleValidationError(
-                    f"Manifest source_roots[{index}].{field} is invalid"
-                )
+        snapshot_kind = entry.get("snapshot_kind", "git")
+        if snapshot_kind == "manifest":
+            _validate_manifest_source_root(entry, index)
+        elif snapshot_kind == "git":
+            _validate_git_source_root(entry, index)
+        else:
+            raise BundleValidationError(
+                f"Manifest source_roots[{index}].snapshot_kind is invalid"
+            )
 
 
 def validate_staged_bundle(path: Path) -> dict[str, Any]:

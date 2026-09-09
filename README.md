@@ -10,7 +10,7 @@ RAG search server для индекса, собранного [rag_crawler](../r
 - `GET /debug/search` — отладочный поиск с фильтрами
 - `POST /v1/chat/completions` — RAG-чат (OpenAI-совместимый)
 - `POST /admin/index/*` — upload, activate, rollback bundle
-- MCP: `search_project`, `ask_project`, `web_search`, `ping`
+- MCP: `search_project`, `ask_project`, `web_search`, `ping` — см. [docs/mcp.md](docs/mcp.md)
 
 ## Требования
 

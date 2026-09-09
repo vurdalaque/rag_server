@@ -6,7 +6,7 @@
 
 Возможности:
 
-- FastAPI HTTP API и MCP tools (`search_project`, `ask_project`, `web_search`)
+- FastAPI HTTP API и MCP tools (`search_project`, `ask_project`, `web_search`) — [docs/mcp.md](docs/mcp.md)
 - OpenAI-совместимый `/v1/chat/completions` с RAG-контекстом
 - Hybrid search: FAISS + BM25, optional rerank
 - Admin API для загрузки, активации и rollback bundle

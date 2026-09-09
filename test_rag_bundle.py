@@ -96,6 +96,67 @@ def test_stage_bundle_accepts_format_version_2(tmp_path: Path) -> None:
     assert {path.name for path in bundle_dir.iterdir()} == BUNDLE_FILES
 
 
+def test_stage_bundle_accepts_manifest_source_roots(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    index_path = source_dir / "rag_index.faiss"
+    metadata_path = source_dir / "rag_metadata.jsonl"
+    manifest_path = source_dir / "rag_manifest.json"
+
+    index = faiss.IndexFlatIP(2)
+    index.add(np.asarray([[1.0, 0.0]], dtype=np.float32))
+    faiss.write_index(index, str(index_path))
+    metadata_path.write_text('{"file": "example.py"}\n', encoding="utf-8")
+
+    manifest_payload = {
+        "format_version": 2,
+        "index_file": index_path.name,
+        "metadata_file": metadata_path.name,
+        "checksums": {
+            index_path.name: file_sha256(index_path),
+            metadata_path.name: file_sha256(metadata_path),
+        },
+        "document_count": 1,
+        "dimensions": 2,
+        "embedding_model": "test-model",
+        "built_at": "2026-07-26T00:00:00+00:00",
+        "source_roots": [
+            {
+                "repo": "radius",
+                "path": "/tmp/radius",
+                "snapshot_kind": "git",
+                "git_commit": "abc123def456",
+                "git_remote": "https://gitlab.example.com/org/radius.git",
+            },
+            {
+                "repo": "radius-confluence",
+                "path": "/tmp/radius-confluence",
+                "snapshot_kind": "manifest",
+                "source_kind": "confluence",
+                "manifest": "/tmp/radius-confluence/.source-manifest.json",
+                "synced_at": "2026-09-09T09:37:01+00:00",
+                "file_count": 124,
+            },
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for path in (index_path, metadata_path, manifest_path):
+            archive.write(path, arcname=path.name)
+
+    bundle_dir, manifest = stage_bundle(
+        archive_path,
+        tmp_path / "staging",
+        1024 * 1024,
+    )
+
+    assert manifest["source_roots"][1]["repo"] == "radius-confluence"
+    assert manifest["source_roots"][1]["snapshot_kind"] == "manifest"
+    assert {path.name for path in bundle_dir.iterdir()} == BUNDLE_FILES
+
+
 def test_stage_bundle_removes_invalid_bundle(tmp_path: Path) -> None:
     staging_dir = tmp_path / "staging"
 
@@ -349,6 +410,88 @@ def test_retrieve_filters_by_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(results) == 1
     assert results[0]["repo"] == "radius-doc"
     assert results[0]["file"] == "fusion/AGENTS.md"
+
+
+def test_recency_factor_penalizes_old_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rag_service_module, "RAG_RECENCY_ENABLED", True)
+    monkeypatch.setattr(rag_service_module, "RAG_RECENCY_HALFLIFE_DAYS", 365.0)
+    monkeypatch.setattr(rag_service_module, "RAG_RECENCY_MIN_FACTOR", 0.25)
+
+    recent = rag_service_module.recency_factor("2099-01-01T00:00:00+00:00")
+    old = rag_service_module.recency_factor("2018-01-01T00:00:00+00:00")
+
+    assert recent == 1.0
+    assert old == 0.25
+    assert recent > old
+
+
+def test_chunk_value_factor_boosts_high_value_chunks() -> None:
+    high = rag_service_module.chunk_value_factor(1.0)
+    low = rag_service_module.chunk_value_factor(0.45)
+    missing = rag_service_module.chunk_value_factor(None)
+
+    assert high == 1.0
+    assert low < high
+    assert missing == 1.0
+
+
+def test_apply_ranking_boosts_includes_chunk_value() -> None:
+    high = {"source_type": "code", "chunk_value": 1.0}
+    low = {"source_type": "code", "chunk_value": 0.45}
+
+    high_score = rag_service_module.apply_ranking_boosts(high, 1.0)
+    low_score = rag_service_module.apply_ranking_boosts(low, 1.0)
+
+    assert high["chunk_value_factor"] == 1.0
+    assert low["chunk_value_factor"] < 1.0
+    assert high_score > low_score
+
+
+def test_retrieve_prefers_recent_documents_with_similar_relevance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_rag_service(
+        [
+            {
+                **metadata_item(
+                    "radius-doc",
+                    "docs/old.md",
+                    "documentation",
+                    "markdown",
+                    "needle content",
+                ),
+                "updated_at": "2018-01-01T00:00:00+00:00",
+            },
+            {
+                **metadata_item(
+                    "radius-doc",
+                    "docs/fresh.md",
+                    "documentation",
+                    "markdown",
+                    "needle content",
+                ),
+                "updated_at": "2099-01-01T00:00:00+00:00",
+            },
+        ],
+        [[0.95, 0.05], [0.94, 0.06]],
+    )
+
+    async def embedding(*_: object) -> np.ndarray:
+        return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(service, "get_embedding", embedding)
+    monkeypatch.setattr(rag_service_module, "RERANK_ENABLED", False)
+    monkeypatch.setattr(rag_service_module, "RAG_RECENCY_ENABLED", True)
+    monkeypatch.setattr(rag_service_module, "RAG_RECENCY_HALFLIFE_DAYS", 365.0)
+    monkeypatch.setattr(rag_service_module, "RAG_RECENCY_MIN_FACTOR", 0.25)
+
+    results = asyncio.run(service.retrieve("needle", top_k=2))
+
+    assert results[0]["file"] == "docs/fresh.md"
+    assert results[0]["recency_factor"] == 1.0
+    assert results[1]["recency_factor"] == 0.25
 
 
 def test_retrieve_applies_source_type_boost_to_hybrid_ranking(

@@ -7,6 +7,7 @@ import os
 import re
 import time
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +205,64 @@ def source_type_boosts() -> dict[str, float]:
 SOURCE_TYPE_BOOSTS = source_type_boosts()
 BM25_K1 = 1.5
 BM25_B = 0.75
+
+
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+RAG_RECENCY_ENABLED = env_bool("RAG_RECENCY_ENABLED", True)
+RAG_RECENCY_HALFLIFE_DAYS = float(os.getenv("RAG_RECENCY_HALFLIFE_DAYS", "365"))
+RAG_RECENCY_MIN_FACTOR = float(os.getenv("RAG_RECENCY_MIN_FACTOR", "0.25"))
+
+
+def recency_factor(updated_at: object) -> float:
+    """Exponential decay by document age; 1.0 when date is missing or recency is disabled."""
+    if not RAG_RECENCY_ENABLED:
+        return 1.0
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        return 1.0
+
+    normalized = updated_at.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return 1.0
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    age_days = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 86400
+    if age_days <= 0:
+        return 1.0
+
+    factor = 0.5 ** (age_days / RAG_RECENCY_HALFLIFE_DAYS)
+    return max(RAG_RECENCY_MIN_FACTOR, factor)
+
+
+def chunk_value_factor(chunk_value: object) -> float:
+    """Soft boost from crawler chunk_value (0.45+ kept at index time)."""
+    if chunk_value is None:
+        return 1.0
+    try:
+        value = float(chunk_value)
+    except (TypeError, ValueError):
+        return 1.0
+    if value <= 0:
+        return 1.0
+    return max(0.5, min(1.0, value ** 0.5))
+
+
+def apply_ranking_boosts(candidate: dict[str, Any], base_score: float) -> float:
+    source_boost = SOURCE_TYPE_BOOSTS.get(str(candidate.get("source_type")), 1.0)
+    recency = recency_factor(candidate.get("updated_at"))
+    chunk_boost = chunk_value_factor(candidate.get("chunk_value"))
+    candidate["recency_factor"] = recency
+    candidate["chunk_value_factor"] = chunk_boost
+    return base_score * source_boost * recency * chunk_boost
 
 
 
@@ -500,6 +559,7 @@ class RagService:
                 "end_line"
             ),
             "git_url": item.get("git_url", ""),
+            "updated_at": item.get("updated_at"),
             "code": item.get(
                 "code",
                 "",
@@ -797,9 +857,7 @@ class RagService:
                     for rank in (faiss_ranks.get(item_index), bm25_ranks.get(item_index))
                     if rank is not None
                 )
-                candidate["hybrid_score"] = rank_score * SOURCE_TYPE_BOOSTS.get(
-                    str(candidate["source_type"]), 1.0
-                )
+                candidate["hybrid_score"] = apply_ranking_boosts(candidate, rank_score)
                 candidate["score"] = candidate["hybrid_score"]
                 candidates.append(candidate)
 
@@ -817,8 +875,9 @@ class RagService:
                 reranked = await self.rerank(client, query, candidates, limit)
                 if reranked:
                     for candidate in reranked:
-                        candidate["score"] = candidate["rerank_score"] * SOURCE_TYPE_BOOSTS.get(
-                            str(candidate["source_type"]), 1.0
+                        candidate["score"] = apply_ranking_boosts(
+                            candidate,
+                            float(candidate["rerank_score"]),
                         )
                     results = sorted(reranked, key=lambda candidate: candidate["score"], reverse=True)
                     record_retrieve_result(
