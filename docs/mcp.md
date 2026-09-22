@@ -320,7 +320,7 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 | `image_count` | `integer` | `1` | Количество изображений (≤ policy) |
 | `reference_images` | `string[]?` | `null` | Base64 reference images |
 
-**Ответ:** MCP `CallToolResult` — блоки `image` (base64) + `text` JSON с `seed`, `prompt_id`, `timings`.
+**Ответ:** MCP `CallToolResult` — блоки `image` (base64) в `content`; метаданные (`seed`, `prompt_id`, `image_count`, `timings`) в `structuredContent` + `outputSchema` в discovery. `image_generation_capabilities` возвращает structured JSON с лимитами и `samplers`.
 
 **Ошибки:** JSON `{"error": {"code", "message", "details?"}}` — например `backend_unavailable`, `safety_blocked`, `invalid_prompt`.
 

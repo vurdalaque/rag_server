@@ -5,13 +5,18 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent
 
 from image_generation import GenerateImageRequest, ImageGenerationBackend
 from image_generation_errors import ImageGenerationError
+from image_mcp_schemas import (
+    GenerateImageStructuredOutput,
+    ImageGenerationCapabilitiesOutput,
+    capabilities_from_backend,
+)
 from rag_metrics import track_mcp_tool
 
 logger = logging.getLogger(__name__)
@@ -85,11 +90,11 @@ def register_image_tools(
         scheduler: str | None = None,
         image_count: int = 1,
         reference_images: list[str] | None = None,
-    ) -> CallToolResult:
+    ) -> Annotated[CallToolResult, GenerateImageStructuredOutput]:
         """
         Generate one or more images from a text prompt (and optional reference images).
 
-        Returns image content blocks plus JSON metadata (seed, timings).
+        Returns MCP image content blocks; metadata is in structured output (seed, timings).
         Reference images must be base64-encoded blobs.
         """
         if _backend is None:
@@ -179,7 +184,7 @@ def register_image_tools(
                 is_error=True,
             )
 
-        content: list[ImageContent | TextContent] = []
+        content: list[ImageContent] = []
 
         for image in result.images:
             content.append(
@@ -190,35 +195,53 @@ def register_image_tools(
                 )
             )
 
-        metadata = {
-            "seed": result.seed,
-            "prompt_id": result.prompt_id,
-            "image_count": len(result.images),
-            "timings": result.timings,
-        }
-        content.append(
-            TextContent(
-                type="text",
-                text=json.dumps(metadata, ensure_ascii=False),
-            )
+        structured = GenerateImageStructuredOutput.from_generation(
+            seed=result.seed,
+            prompt_id=result.prompt_id,
+            image_count=len(result.images),
+            timings=result.timings,
         )
 
-        return CallToolResult(content=content)
+        return CallToolResult(
+            content=content,
+            structured_content=structured.model_dump(mode="json"),
+        )
 
     @track_mcp_tool("image_generation_capabilities")
-    async def image_generation_capabilities() -> dict[str, Any]:
+    async def image_generation_capabilities() -> (
+        Annotated[CallToolResult, ImageGenerationCapabilitiesOutput]
+    ):
         """
         Report server image-generation limits, defaults, and sampler metadata.
         """
         if _backend is None:
-            return {
-                "error": {
-                    "code": "backend_unavailable",
-                    "message": "image generation is not available on this server",
-                }
-            }
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": {
+                                    "code": "backend_unavailable",
+                                    "message": (
+                                        "image generation is not available "
+                                        "on this server"
+                                    ),
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+                is_error=True,
+            )
 
-        return await _backend.capabilities()
+        payload = await _backend.capabilities()
+        structured = capabilities_from_backend(payload)
+        return CallToolResult(
+            content=[],
+            structured_content=structured.model_dump(mode="json"),
+        )
 
     mcp.add_tool(generate_image)
     mcp.add_tool(image_generation_capabilities)

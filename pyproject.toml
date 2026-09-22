@@ -33,6 +33,7 @@ py-modules = [
     "image_generation",
     "image_generation_config",
     "image_generation_errors",
+    "image_mcp_schemas",
     "image_mcp_tools",
     "image_safety",
     "llm_client",
