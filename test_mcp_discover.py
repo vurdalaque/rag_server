@@ -54,10 +54,12 @@ def mcp_client(tmp_path_factory: pytest.TempPathFactory) -> TestClient:
             "RAG_INDEX_FILE",
             "RAG_METADATA_FILE",
             "RAG_METRICS_PROBE_ENABLED",
+            "IMAGE_GENERATION_ENABLED",
         )
     }
 
     os.environ["RAG_ADMIN_TOKEN"] = "test-token"
+    os.environ["IMAGE_GENERATION_ENABLED"] = "false"
     os.environ["RAG_STAGING_DIR"] = str(tmp_path / "staging")
     os.environ["RAG_BUNDLE_STATE_DIR"] = str(tmp_path / "state")
     os.environ["RAG_INDEX_FILE"] = str(tmp_path / "missing.faiss")

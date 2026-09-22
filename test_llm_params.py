@@ -93,3 +93,26 @@ def test_apply_llm_defaults_can_force_over_client_values(
     assert payload["extra_body"]["chat_template_kwargs"] == {
         "enable_thinking": False,
     }
+
+
+def test_apply_llm_defaults_override_thinking_wins_over_force_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reload_llm_params(monkeypatch, RAG_LLM_FORCE_DEFAULTS="true")
+
+    payload = llm_params.apply_llm_defaults(
+        {
+            "model": "Qwen3.8-27B",
+            "messages": [{"role": "user", "content": "hi"}],
+            "extra_body": {
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                }
+            },
+        },
+        override_thinking=False,
+    )
+
+    assert payload["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": False,
+    }

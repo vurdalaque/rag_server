@@ -40,12 +40,16 @@ from rag_metrics import (
     track_mcp_tool,
     update_index_state,
 )
+from image_mcp_tools import list_mcp_tool_names, list_ping_tool_names
 from rag_service import (
     LLM_MODEL,
     LLM_URL,
     REQUEST_TIMEOUT,
     rag_service,
 )
+
+# Module-level image backend set by init_image_generation() during lifespan.
+image_backend: Any | None = None
 
 
 SEARXNG_URL = os.getenv(
@@ -406,11 +410,7 @@ async def ping() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": "Project Knowledge Gateway",
-        "tools": [
-            "search_project",
-            "web_search",
-            "ask_project",
-        ],
+        "tools": list_ping_tool_names(),
     }
 
 
@@ -457,6 +457,19 @@ async def upstream_stream(
                 yield chunk
 
 
+async def init_image_generation() -> None:
+    """Probe ComfyUI and register image MCP tools when available."""
+    global image_backend
+
+    from image_generation import create_comfy_backend_if_ready
+    from image_mcp_tools import register_image_tools
+
+    image_backend = await create_comfy_backend_if_ready()
+
+    if image_backend is not None:
+        register_image_tools(mcp, image_backend)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     active = bundle_store().active_bundle()
@@ -469,6 +482,8 @@ async def lifespan(_: FastAPI):
             update_index_state(rag_service)
     else:
         load_bundle(active[0])
+
+    await init_image_generation()
 
     async with dependency_probe_loop(SEARXNG_URL):
         async with mcp.session_manager.run():
@@ -548,12 +563,7 @@ async def health() -> dict[str, Any]:
             "openai": "/v1/chat/completions",
             "mcp": "/mcp/",
         },
-        "mcp_tools": [
-            "search_project",
-            "web_search",
-            "ask_project",
-            "ping",
-        ],
+        "mcp_tools": list_mcp_tool_names(),
     }
 
 

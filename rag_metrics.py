@@ -173,6 +173,36 @@ MCP_SEARCH_RESULTS = Histogram(
     buckets=(0, 1, 2, 3, 6, 10, 20),
 )
 
+_IMAGE_GENERATION_STAGES = frozenset(
+    {
+        "probe",
+        "validate",
+        "safety",
+        "comfy_execute",
+        "generate",
+    }
+)
+_IMAGE_GENERATION_OUTCOMES = frozenset(
+    {
+        "success",
+        "error",
+        "blocked",
+        "skipped",
+    }
+)
+
+IMAGE_GENERATION_EVENTS = Counter(
+    "rag_image_generation_total",
+    "Image generation stage outcomes.",
+    ["stage", "outcome"],
+)
+IMAGE_GENERATION_DURATION = Histogram(
+    "rag_image_generation_duration_seconds",
+    "Image generation stage latency.",
+    ["stage"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+)
+
 CHAT_COMPLETIONS = Counter(
     "rag_chat_completions_total",
     "OpenAI-compatible chat completion requests.",
@@ -420,6 +450,46 @@ def record_bundle_rollback(
 ) -> None:
     if METRICS_ENABLED:
         BUNDLE_ROLLBACK.labels(outcome=outcome).inc()
+
+
+def _bounded_image_label(
+    value: str,
+    allowed: frozenset[str],
+    fallback: str,
+) -> str:
+    normalized = value.strip().lower()
+
+    if normalized in allowed:
+        return normalized
+
+    return fallback
+
+
+def record_image_generation(
+    stage: str,
+    outcome: str,
+) -> None:
+    if not METRICS_ENABLED:
+        return
+
+    IMAGE_GENERATION_EVENTS.labels(
+        stage=_bounded_image_label(stage, _IMAGE_GENERATION_STAGES, "generate"),
+        outcome=_bounded_image_label(
+            outcome,
+            _IMAGE_GENERATION_OUTCOMES,
+            "error",
+        ),
+    ).inc()
+
+
+@contextmanager
+def track_image_stage(
+    stage: str,
+) -> Iterator[None]:
+    bounded = _bounded_image_label(stage, _IMAGE_GENERATION_STAGES, "generate")
+
+    with track_duration(IMAGE_GENERATION_DURATION, stage=bounded):
+        yield
 
 
 def track_mcp_tool(

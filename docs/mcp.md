@@ -139,6 +139,8 @@ Mcp-Method: server/discover
 | Имя | Назначение |
 |-----|------------|
 | `search_project` | Семантический поиск по индексу (основной) |
+
+> **Draft — image generation (conditional):** при `IMAGE_GENERATION_ENABLED=true` и успешном probe ComfyUI в `tools/list` появляются `generate_image` и `image_generation_capabilities`. Иначе список совпадает с базовым (см. `/health` → `mcp_tools`).
 | `ask_project` | Поиск + ответ через upstream LLM |
 | `web_search` | Поиск в интернете через SearXNG |
 | `ping` | Проверка доступности MCP |
@@ -295,6 +297,40 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 ```
 
 `sources` — укороченная версия hit-ов (без поля `code`). Полный текст фрагментов уходит в prompt LLM через `build_context`.
+
+---
+
+### `generate_image` (draft, conditional)
+
+Генерация изображений через ComfyUI. Инструмент **не регистрируется**, если при старте probe не прошёл.
+
+**Параметры** (model-agnostic):
+
+| Параметр | Тип | По умолчанию | Описание |
+|----------|-----|--------------|----------|
+| `prompt` | `string` | — | Текстовый prompt |
+| `negative_prompt` | `string?` | `null` | Negative prompt |
+| `width` | `integer?` | server default | Ширина (px) |
+| `height` | `integer?` | server default | Высота (px) |
+| `steps` | `integer?` | server default | Шаги сэмплера |
+| `seed` | `integer?` | `null` | Seed (опционально) |
+| `cfg` | `number?` | server default | CFG scale |
+| `sampler` | `string?` | server default | Имя sampler |
+| `scheduler` | `string?` | server default | Scheduler |
+| `image_count` | `integer` | `1` | Количество изображений (≤ policy) |
+| `reference_images` | `string[]?` | `null` | Base64 reference images |
+
+**Ответ:** MCP `CallToolResult` — блоки `image` (base64) + `text` JSON с `seed`, `prompt_id`, `timings`.
+
+**Ошибки:** JSON `{"error": {"code", "message", "details?"}}` — например `backend_unavailable`, `safety_blocked`, `invalid_prompt`.
+
+Переменные: `IMAGE_GENERATION_*`, `COMFYUI_*` в `env.example`.
+
+---
+
+### `image_generation_capabilities` (draft, conditional)
+
+Возвращает лимиты сервера (`max_images`, `max_output_bytes`, reference limits), defaults (resolution, steps, cfg, sampler) и при доступности ComfyUI — enum sampler/scheduler из `/object_info`.
 
 ---
 
@@ -464,5 +500,8 @@ curl -s "http://localhost:8000/debug/search?query=SecurOS+Radius&repo=radius-doc
 | `rag_server.py` | MCP tools, mount `/mcp`, discover handler |
 | `rag_service.py` | `retrieve`, `ask`, ранжирование, `build_context` |
 | `test_mcp_discover.py` | Тесты discover и tools/list |
-| `env.example` | `RAG_RECENCY_*`, `RAG_SOURCE_TYPE_BOOSTS`, LLM, SearXNG |
+| `test_image_mcp_image.py` | Условная регистрация image MCP tools |
+| `image_generation.py` | Backend facade, ComfyUI probe/generate |
+| `image_mcp_tools.py` | `register_image_tools`, списки для `/health` / `ping` |
+| `env.example` | `RAG_RECENCY_*`, `RAG_SOURCE_TYPE_BOOSTS`, LLM, SearXNG, `IMAGE_GENERATION_*` |
 | `AGENTS.md` | Контракт `source_type`, admin API |

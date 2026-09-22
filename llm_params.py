@@ -78,8 +78,14 @@ LLM_FORCE_DEFAULTS = env_bool(
 
 def apply_llm_defaults(
     payload: dict[str, Any],
+    *,
+    override_thinking: bool | None = None,
 ) -> dict[str, Any]:
-    """Подставляет sampling-параметры для LLM, если клиент их не передал."""
+    """Подставляет sampling-параметры для LLM, если клиент их не передал.
+
+    When ``override_thinking`` is set (e.g. safety validator), it always wins over
+    ``RAG_LLM_FORCE_DEFAULTS`` and ``RAG_LLM_ENABLE_THINKING``.
+    """
     result = dict(payload)
     force = LLM_FORCE_DEFAULTS
 
@@ -101,7 +107,9 @@ def apply_llm_defaults(
         extra_body.get("chat_template_kwargs") or {}
     )
 
-    if force or "enable_thinking" not in chat_template_kwargs:
+    if override_thinking is not None:
+        chat_template_kwargs["enable_thinking"] = override_thinking
+    elif force or "enable_thinking" not in chat_template_kwargs:
         chat_template_kwargs["enable_thinking"] = LLM_ENABLE_THINKING
 
     extra_body["chat_template_kwargs"] = chat_template_kwargs

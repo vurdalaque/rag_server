@@ -15,6 +15,7 @@ ENV/
 
 # Test and lint caches
 .pytest_cache/
+.pytest_tmp/
 .test_metrics_run/
 .mypy_cache/
 .ruff_cache/
@@ -31,7 +32,9 @@ htmlcov/
 # Server runtime and E2E artifacts
 rag_staging/
 rag_bundle_state/
-data/
+data/*
+!data/comfy_image_workflow.template.json
+deploy.zip
 e2e_run/
 .env
 .env.*

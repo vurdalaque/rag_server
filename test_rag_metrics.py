@@ -21,6 +21,7 @@ def test_metrics_endpoint_returns_prometheus_format(
     monkeypatch.setenv("RAG_INDEX_FILE", str(workspace / "missing.faiss"))
     monkeypatch.setenv("RAG_METADATA_FILE", str(workspace / "missing.jsonl"))
     monkeypatch.setenv("RAG_METRICS_PROBE_ENABLED", "false")
+    monkeypatch.setenv("IMAGE_GENERATION_ENABLED", "false")
     rag_server.rag_service.clear()
 
     client = TestClient(rag_server.app)

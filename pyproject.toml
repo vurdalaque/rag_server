@@ -15,6 +15,7 @@ dependencies = [
     "faiss-cpu>=1.10,<2",
     "mcp>=2.1,<3",
     "prometheus-client>=0.21,<1",
+    "websockets>=14,<16",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,14 @@ dev = [
 [tool.setuptools]
 packages = []
 py-modules = [
+    "comfy_client",
+    "comfy_workflow",
+    "image_generation",
+    "image_generation_config",
+    "image_generation_errors",
+    "image_mcp_tools",
+    "image_safety",
+    "llm_client",
     "llm_params",
     "rag_bundle",
     "rag_metrics",
