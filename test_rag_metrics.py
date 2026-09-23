@@ -49,3 +49,13 @@ def test_update_index_state_sets_gauges() -> None:
 
     payload = rag_metrics.metrics_payload().decode("utf-8")
     assert "rag_index_loaded 0.0" in payload
+
+
+def test_image_generation_metrics_recorded() -> None:
+    rag_metrics.record_image_generation("comfy_execute", "success")
+    rag_metrics.set_image_generation_enabled(True)
+
+    payload = rag_metrics.metrics_payload().decode("utf-8")
+    assert "rag_image_generation_total" in payload
+    assert 'stage="comfy_execute"' in payload
+    assert "rag_image_generation_enabled 1.0" in payload

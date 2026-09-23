@@ -483,6 +483,34 @@ curl -s "http://localhost:8000/debug/search?query=SecurOS+Radius&repo=radius-doc
 
 ---
 
+## Долгие вызовы tools (`generate_image`, `ask_project`)
+
+`tools/call` держит HTTP-соединение до конца работы на сервере. Таймауты по цепочке (самый короткий выигрывает):
+
+| Участок | Типичное значение | Где настроить |
+|---------|-------------------|---------------|
+| ComfyUI / WS ожидание | `IMAGE_GENERATION_TIMEOUT` (по умолчанию **600** с) | `.env` на spark |
+| Realm chat → внешний MCP | **600** с read | `www/backend/app/chat_mcp.py` (`MCP_REQUEST_TIMEOUT`) |
+| ocserv nginx → backend `/mcp/` (diagram) | **300** с | `site/var/nginx.conf` |
+| ocserv nginx → `/api/chat/.../complete` | **900** с | `site/var/nginx.conf` |
+| nginx **без** `proxy_read_timeout` | **60** с (дефолт) | любой новый reverse-proxy перед `:8000` |
+| ChatGPT Connector / часть MCP-клиентов | ~**60** с на один tool call | клиент; сервер не продлевает |
+
+**RAG MCP на spark** обычно слушает `http://<spark>:8000/mcp/` **напрямую** — ocserv nginx к нему не подключён. Если обрыв ровно около 60 с, чаще виноват **клиент-коннектор** или **прокси с дефолтным 60 s**, а не `rag_server`.
+
+Диагностика на spark:
+
+```bash
+# длительность tools/call с сервера (обходит внешний коннектор)
+time curl -sS -m 700 http://127.0.0.1:8000/mcp/ ... tools/call generate_image ...
+```
+
+Метрики: `rag_mcp_tool_duration_seconds{tool="generate_image"}`, `rag_image_generation_duration_seconds`, `rag_dependency_up{service="comfyui"}` — дашборд *RAG server* в Grafana (`site/victoria-metrics`).
+
+Если нужен клиент с жёстким лимитом ~60 s, единственный надёжный обход — **асинхронная модель** (отдельный submit + poll tool); в текущей версии не реализована.
+
+---
+
 ## Ограничения и заметки
 
 - MCP и `/debug/search` **не требуют** `RAG_ADMIN_TOKEN` (в отличие от `/admin/index/*`).

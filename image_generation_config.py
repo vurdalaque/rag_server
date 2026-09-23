@@ -152,7 +152,7 @@ def load_image_generation_config() -> ImageGenerationConfig:
         upload_timeout_seconds=_env_float("IMAGE_GENERATION_UPLOAD_TIMEOUT", 120.0),
         output_read_timeout_seconds=_env_float(
             "IMAGE_GENERATION_OUTPUT_READ_TIMEOUT",
-            60.0,
+            120.0,
         ),
         max_images=max(1, _env_int("IMAGE_GENERATION_MAX_IMAGES", 4)),
         max_output_bytes=max(

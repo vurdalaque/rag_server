@@ -469,6 +469,10 @@ async def init_image_generation() -> None:
     if image_backend is not None:
         register_image_tools(mcp, image_backend)
 
+    from rag_metrics import set_image_generation_enabled
+
+    set_image_generation_enabled(image_backend is not None)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
