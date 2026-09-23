@@ -19,8 +19,8 @@ from image_generation_errors import (
     SafetyRejectedError,
 )
 from image_reference import (
+    canonicalize_reference_png_for_comfy,
     reference_sha256,
-    validate_reference_image_bytes,
 )
 from image_safety import ImageSafetyValidator, SafetyImage
 from rag_metrics import record_image_generation, track_image_stage
@@ -209,21 +209,27 @@ class ComfyUIBackend:
         client = self._client_instance()
         names: list[str] = []
 
-        for index, blob in enumerate(references):
-            validate_reference_image_bytes(blob, index=index)
+        for index, raw in enumerate(references):
+            blob = canonicalize_reference_png_for_comfy(raw, index=index)
             digest_before = reference_sha256(blob)
+            if raw != blob:
+                logger.info(
+                    "reference image re-encoded for ComfyUI index=%s raw_bytes=%s png_bytes=%s",
+                    index,
+                    len(raw),
+                    len(blob),
+                )
             logger.info(
                 "reference image ok index=%s bytes=%s sha256=%s",
                 index,
                 len(blob),
                 digest_before[:16],
             )
-            mime = _guess_mime(blob, index)
 
-            if mime not in self._config.allowed_input_mime_types:
+            if "image/png" not in self._config.allowed_input_mime_types:
                 raise InvalidRequestError(
                     "reference image mime type is not allowed",
-                    mime_type=mime,
+                    mime_type="image/png",
                     allowed=sorted(self._config.allowed_input_mime_types),
                 )
 
@@ -234,11 +240,10 @@ class ComfyUIBackend:
                     max_bytes=self._config.max_reference_bytes,
                 )
 
-            extension = mimetypes.guess_extension(mime) or ".bin"
             uploaded = await client.upload_image(
-                f"ref_{index}{extension}",
+                f"ref_{index}.png",
                 blob,
-                mime,
+                "image/png",
             )
             await client.verify_uploaded_image_bytes(uploaded, blob, sha256_before=digest_before)
             names.append(uploaded.name)

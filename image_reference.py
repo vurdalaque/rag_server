@@ -105,7 +105,35 @@ def reference_sha256_prefix(data: bytes, hex_chars: int = 16) -> str:
     return reference_sha256(data)[:hex_chars]
 
 
+def canonicalize_reference_png_for_comfy(data: bytes, *, index: int) -> bytes:
+    """Re-encode to a fresh PNG so ComfyUI LoadImage reads a plain raster file.
+
+    ComfyUI may route marginal/corrupt files through PyAV (VideoFromFile), which
+    fails on static PNG with avcodec_receive_frame errors.
+    """
+    validate_reference_image_bytes(data, index=index)
+
+    from PIL import Image
+
+    with Image.open(BytesIO(data)) as image:
+        image.load()
+        if image.mode in ("RGBA", "LA") or (
+            image.mode == "P" and "transparency" in image.info
+        ):
+            converted = image.convert("RGBA")
+        elif image.mode != "RGB":
+            converted = image.convert("RGB")
+        else:
+            converted = image.copy()
+
+        buffer = BytesIO()
+        converted.save(buffer, format="PNG", compress_level=6)
+        out = buffer.getvalue()
+
+    validate_reference_image_bytes(out, index=index)
+    return out
+
+
 def decode_and_validate_reference_image(encoded: str, *, index: int) -> bytes:
     data = decode_reference_image_base64(encoded, index=index)
-    validate_reference_image_bytes(data, index=index)
-    return data
+    return canonicalize_reference_png_for_comfy(data, index=index)

@@ -13,6 +13,7 @@ from comfy_client import ComfyUIClient, ComfyUploadedImage
 from image_generation import ComfyUIBackend, GenerateImageRequest, ImageGenerationResult
 from image_generation_config import ImageGenerationConfig
 from image_reference import (
+    canonicalize_reference_png_for_comfy,
     decode_and_validate_reference_image,
     decode_reference_image_base64,
     validate_reference_image_bytes,
@@ -28,6 +29,16 @@ def _rgb_png_256() -> bytes:
     data = buffer.getvalue()
     validate_reference_image_bytes(data, index=0)
     return data
+
+
+def test_canonicalize_produces_fresh_decodable_png() -> None:
+    data = _rgb_png_256()
+    out = canonicalize_reference_png_for_comfy(data, index=0)
+    assert out.startswith(b"\x89PNG\r\n\x1a\n")
+    validate_reference_image_bytes(out, index=0)
+    with Image.open(BytesIO(out)) as image:
+        image.load()
+        assert image.size == (256, 256)
 
 
 def test_valid_png_passes_full_decode() -> None:
@@ -108,7 +119,8 @@ def test_mcp_generate_image_accepts_valid_reference() -> None:
     )
     backend.generate.assert_awaited_once()
     request: GenerateImageRequest = backend.generate.await_args.args[0]
-    assert request.reference_images[0] == png
+    assert request.reference_images[0].startswith(b"\x89PNG")
+    validate_reference_image_bytes(request.reference_images[0], index=0)
 
 
 def test_upload_references_calls_verify(monkeypatch: pytest.MonkeyPatch) -> None:
