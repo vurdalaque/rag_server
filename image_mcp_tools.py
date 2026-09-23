@@ -225,9 +225,9 @@ def register_image_tools(
             structured_content=structured.model_dump(mode="json"),
         )
         logger.info(
-            "MCP generate_image ok image_blocks=%s structured_image_count=%s seed=%s",
+            "MCP RETURN generate_image prompt_id=%s artifacts=%s seed=%s",
+            result.prompt_id,
             len(content),
-            structured.image_count,
             structured.seed,
         )
         return tool_result
