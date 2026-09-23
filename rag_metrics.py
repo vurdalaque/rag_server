@@ -164,7 +164,21 @@ MCP_TOOL_DURATION = Histogram(
     "rag_mcp_tool_duration_seconds",
     "MCP tool invocation latency.",
     ["tool"],
-    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+    buckets=(
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        30.0,
+        60.0,
+        120.0,
+        300.0,
+        600.0,
+    ),
 )
 MCP_SEARCH_RESULTS = Histogram(
     "rag_mcp_search_results",
@@ -200,7 +214,12 @@ IMAGE_GENERATION_DURATION = Histogram(
     "rag_image_generation_duration_seconds",
     "Image generation stage latency.",
     ["stage"],
-    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0),
+)
+
+IMAGE_GENERATION_ENABLED = Gauge(
+    "rag_image_generation_enabled",
+    "Whether image MCP tools registered after startup probe (1/0).",
 )
 
 CHAT_COMPLETIONS = Counter(
@@ -518,6 +537,14 @@ def track_mcp_tool(
                     if isinstance(count, int):
                         MCP_SEARCH_RESULTS.labels(tool=tool_name).observe(count)
 
+                try:
+                    from mcp.types import CallToolResult
+
+                    if isinstance(result, CallToolResult) and result.is_error:
+                        outcome = "error"
+                except ImportError:
+                    pass
+
                 return result
             except Exception:
                 outcome = "error"
@@ -584,6 +611,41 @@ async def probe_searxng(
     return True
 
 
+def _comfyui_base_url() -> str:
+    return (
+        os.getenv("COMFYUI_URL")
+        or os.getenv("COMFYUI_BASE_URL")
+        or "http://127.0.0.1:8188"
+    ).rstrip("/")
+
+
+async def probe_comfyui(
+    timeout: float,
+) -> bool:
+    if not env_bool("IMAGE_GENERATION_ENABLED", False):
+        return False
+
+    url = f"{_comfyui_base_url()}/object_info"
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+    except BaseException:
+        return False
+
+    return True
+
+
+def set_image_generation_enabled(
+    enabled: bool,
+) -> None:
+    if METRICS_ENABLED:
+        IMAGE_GENERATION_ENABLED.set(1 if enabled else 0)
+
+
 async def probe_llm(
     timeout: float,
 ) -> bool:
@@ -626,6 +688,10 @@ async def run_dependency_probes(
 
     searxng_ok = await probe_searxng(searxng_url, probe_timeout)
     DEPENDENCY_UP.labels(service="searxng").set(1 if searxng_ok else 0)
+
+    comfy_ok = await probe_comfyui(probe_timeout)
+    if env_bool("IMAGE_GENERATION_ENABLED", False):
+        DEPENDENCY_UP.labels(service="comfyui").set(1 if comfy_ok else 0)
 
 
 @asynccontextmanager

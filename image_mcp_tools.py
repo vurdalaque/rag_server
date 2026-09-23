@@ -98,6 +98,7 @@ def register_image_tools(
         Reference images must be base64-encoded blobs.
         """
         if _backend is None:
+            logger.warning("generate_image rejected: image backend not registered")
             return CallToolResult(
                 content=[
                     TextContent(
@@ -118,6 +119,14 @@ def register_image_tools(
                 ],
                 is_error=True,
             )
+
+        ref_count = len(reference_images or [])
+        logger.info(
+            "MCP generate_image start prompt_chars=%s reference_images=%s image_count=%s",
+            len(prompt),
+            ref_count,
+            image_count,
+        )
 
         decoded_refs: list[bytes] = []
 
@@ -165,6 +174,12 @@ def register_image_tools(
         try:
             result = await _backend.generate(request)
         except ImageGenerationError as error:
+            logger.warning(
+                "MCP generate_image failed code=%s message=%s details=%s",
+                error.code,
+                error.message,
+                error.details or {},
+            )
             return CallToolResult(
                 content=[
                     TextContent(
@@ -202,10 +217,17 @@ def register_image_tools(
             timings=result.timings,
         )
 
-        return CallToolResult(
+        tool_result = CallToolResult(
             content=content,
             structured_content=structured.model_dump(mode="json"),
         )
+        logger.info(
+            "MCP generate_image ok image_blocks=%s structured_image_count=%s seed=%s",
+            len(content),
+            structured.image_count,
+            structured.seed,
+        )
+        return tool_result
 
     @track_mcp_tool("image_generation_capabilities")
     async def image_generation_capabilities() -> (

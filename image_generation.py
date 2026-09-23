@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -133,6 +134,15 @@ class ComfyUIBackend:
                 return False
 
             record_image_generation("probe", "success")
+            root = self._config.comfyui_output_root.resolve()
+            if str(os.getenv("COMFYUI_OUTPUT_ROOT", "")).strip() == "":
+                logger.warning(
+                    "COMFYUI_OUTPUT_ROOT is unset; reading ComfyUI files from %s "
+                    "(set COMFYUI_OUTPUT_ROOT to ComfyUI's output directory)",
+                    root,
+                )
+            else:
+                logger.info("image generation probe ok comfy_output_root=%s", root)
             return True
 
     def _validate_request(
@@ -270,6 +280,13 @@ class ComfyUIBackend:
             if isinstance(scheduler_list, list) and scheduler_list:
                 allowed_schedulers = frozenset(str(item) for item in scheduler_list)
 
+        logger.info(
+            "image generate start image_count=%s reference_images=%s output_root=%s",
+            validated.image_count,
+            len(validated.reference_images),
+            self._config.comfyui_output_root,
+        )
+
         with track_image_stage("comfy_execute"):
             for _ in range(validated.image_count):
                 request_id = str(uuid.uuid4())
@@ -324,9 +341,18 @@ class ComfyUIBackend:
 
         if not generated:
             record_image_generation("generate", "error")
+            logger.warning("image generate finished with zero images after comfy_execute")
             raise InvalidRequestError("ComfyUI returned no images")
 
         record_image_generation("generate", "success")
+        total_bytes = sum(len(img.data) for img in generated)
+        logger.info(
+            "image generate ok images=%s bytes=%s seed=%s prompt_id=%s",
+            len(generated),
+            total_bytes,
+            seed_used,
+            last_prompt_id,
+        )
 
         return ImageGenerationResult(
             images=generated,

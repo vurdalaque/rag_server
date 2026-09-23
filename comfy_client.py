@@ -226,6 +226,7 @@ class ComfyUIClient:
         prompt_id = payload.get("prompt_id")
         if not prompt_id:
             raise InternalImageGenerationError("ComfyUI prompt response missing prompt_id")
+        logger.info("ComfyUI prompt submitted prompt_id=%s", prompt_id)
         return str(prompt_id)
 
     async def fetch_history(self, prompt_id: str) -> dict[str, Any]:
@@ -344,10 +345,21 @@ class ComfyUIClient:
         history = await self.fetch_history(prompt_id)
         images = self.extract_output_images(history, prompt_id)
         if not images:
+            logger.warning(
+                "ComfyUI history has no images prompt_id=%s history_keys=%s",
+                prompt_id,
+                sorted(history.keys())[:5],
+            )
             raise OutputMissingError(
                 "ComfyUI completed without output images",
                 prompt_id=prompt_id,
             )
+        logger.info(
+            "ComfyUI history images prompt_id=%s count=%s names=%s",
+            prompt_id,
+            len(images),
+            [img.filename for img in images],
+        )
         return ComfyPromptOutputs(
             prompt_id=prompt_id,
             client_id=run_client_id,
@@ -363,11 +375,25 @@ class ComfyUIClient:
             image.type,
         )
         if not path.is_file():
+            logger.warning(
+                "ComfyUI output file missing path=%s output_root=%s filename=%s subfolder=%s",
+                path,
+                self._config.comfyui_output_root,
+                image.filename,
+                image.subfolder,
+            )
             raise OutputMissingError(
                 "Generated output file not found",
                 filename=image.filename,
                 subfolder=image.subfolder,
+                resolved_path=str(path),
+                output_root=str(self._config.comfyui_output_root.resolve()),
             )
+        logger.info(
+            "ComfyUI output read path=%s bytes=%s",
+            path,
+            path.stat().st_size,
+        )
         return path.read_bytes()
 
     async def run_workflow(
