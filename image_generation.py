@@ -14,8 +14,13 @@ from comfy_client import ComfyUIClient
 from image_generation_config import ImageGenerationConfig, load_image_generation_config
 from image_generation_errors import (
     ImageGenerationError,
+    InvalidReferenceImageError,
     InvalidRequestError,
     SafetyRejectedError,
+)
+from image_reference import (
+    reference_sha256,
+    validate_reference_image_bytes,
 )
 from image_safety import ImageSafetyValidator, SafetyImage
 from rag_metrics import record_image_generation, track_image_stage
@@ -201,6 +206,14 @@ class ComfyUIBackend:
         names: list[str] = []
 
         for index, blob in enumerate(references):
+            validate_reference_image_bytes(blob, index=index)
+            digest_before = reference_sha256(blob)
+            logger.info(
+                "reference image ok index=%s bytes=%s sha256=%s",
+                index,
+                len(blob),
+                digest_before[:16],
+            )
             mime = _guess_mime(blob, index)
 
             if mime not in self._config.allowed_input_mime_types:
@@ -223,6 +236,7 @@ class ComfyUIBackend:
                 blob,
                 mime,
             )
+            await client.verify_uploaded_image_bytes(uploaded, blob, sha256_before=digest_before)
             names.append(uploaded.name)
 
         return tuple(names)

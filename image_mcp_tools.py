@@ -11,7 +11,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent
 
 from image_generation import GenerateImageRequest, ImageGenerationBackend
-from image_generation_errors import ImageGenerationError
+from image_generation_errors import ImageGenerationError, InvalidReferenceImageError
+from image_reference import decode_and_validate_reference_image
 from image_mcp_schemas import (
     GenerateImageStructuredOutput,
     ImageGenerationCapabilitiesOutput,
@@ -133,8 +134,10 @@ def register_image_tools(
         if reference_images:
             for index, encoded in enumerate(reference_images):
                 try:
-                    decoded_refs.append(base64.b64decode(encoded, validate=True))
-                except Exception as error:
+                    decoded_refs.append(
+                        decode_and_validate_reference_image(encoded, index=index),
+                    )
+                except InvalidReferenceImageError as error:
                     return CallToolResult(
                         content=[
                             TextContent(
@@ -142,12 +145,12 @@ def register_image_tools(
                                 text=json.dumps(
                                     {
                                         "error": {
-                                            "code": "invalid_reference_images",
-                                            "message": (
-                                                f"reference_images[{index}] "
-                                                "is not valid base64"
-                                            ),
-                                            "details": {"reason": str(error)},
+                                            "code": error.code,
+                                            "message": error.message,
+                                            "details": {
+                                                "index": index,
+                                                **(error.details or {}),
+                                            },
                                         }
                                     },
                                     ensure_ascii=False,

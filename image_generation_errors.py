@@ -32,6 +32,11 @@ class InvalidRequestError(ImageGenerationError):
         super().__init__("invalid_request", message, details)
 
 
+class InvalidReferenceImageError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_reference_image", message, details)
+
+
 class UnsupportedParameterError(ImageGenerationError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__("unsupported_parameter", message, details)

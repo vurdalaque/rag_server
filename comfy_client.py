@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -190,11 +191,68 @@ class ComfyUIClient:
         name = body.get("name")
         if not name:
             raise InternalImageGenerationError("ComfyUI upload returned no name")
-        return ComfyUploadedImage(
+        uploaded = ComfyUploadedImage(
             name=str(name),
             subfolder=str(body.get("subfolder") or ""),
             type=str(body.get("type") or "input"),
         )
+        return uploaded
+
+    async def fetch_view_bytes(self, image: ComfyUploadedImage) -> bytes:
+        client = await self._client()
+        params = {
+            "filename": image.name,
+            "subfolder": image.subfolder,
+            "type": image.type,
+        }
+        try:
+            response = await client.get(
+                "/view",
+                params=params,
+                timeout=self._config.upload_timeout_seconds,
+            )
+            response.raise_for_status()
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            raise ComfyUIUnavailableError(
+                "ComfyUI view fetch failed",
+                reason=str(exc),
+                filename=image.name,
+            ) from exc
+        return response.content
+
+    async def verify_uploaded_image_bytes(
+        self,
+        uploaded: ComfyUploadedImage,
+        expected: bytes,
+        *,
+        sha256_before: str | None = None,
+    ) -> None:
+        downloaded = await self.fetch_view_bytes(uploaded)
+        digest_after = hashlib.sha256(downloaded).hexdigest()
+        digest_before = sha256_before or hashlib.sha256(expected).hexdigest()
+        if digest_before != digest_after:
+            logger.error(
+                "ComfyUI upload bytes mismatch name=%s before_sha256=%s after_sha256=%s "
+                "before_len=%s after_len=%s",
+                uploaded.name,
+                digest_before,
+                digest_after,
+                len(expected),
+                len(downloaded),
+            )
+            raise InternalImageGenerationError(
+                "Uploaded reference image bytes do not match ComfyUI stored file",
+                filename=uploaded.name,
+                size_before=len(expected),
+                size_after=len(downloaded),
+                sha256_before=digest_before,
+                sha256_after=digest_after,
+            )
+        if downloaded != expected:
+            raise InternalImageGenerationError(
+                "Uploaded reference image content mismatch after hash collision check",
+                filename=uploaded.name,
+            )
 
     async def submit_prompt(
         self,

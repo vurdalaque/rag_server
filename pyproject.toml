@@ -16,6 +16,7 @@ dependencies = [
     "mcp>=2.1,<3",
     "prometheus-client>=0.21,<1",
     "websockets>=14,<16",
+    "Pillow>=10,<12",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,7 @@ py-modules = [
     "image_generation",
     "image_generation_config",
     "image_generation_errors",
+    "image_reference",
     "image_mcp_schemas",
     "image_mcp_tools",
     "image_safety",
