@@ -106,6 +106,10 @@ class ComfyUIBackend:
 
         return ComfyUIClient(self._config)
 
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+
     def _safety_validator(self) -> ImageSafetyValidator:
         if self._safety is not None:
             return self._safety

@@ -474,6 +474,21 @@ async def init_image_generation() -> None:
     set_image_generation_enabled(image_backend is not None)
 
 
+async def shutdown_image_generation() -> None:
+    """Release ComfyUI HTTP clients so shutdown is not blocked on open sockets."""
+    global image_backend
+
+    backend = image_backend
+    image_backend = None
+
+    if backend is None:
+        return
+
+    close = getattr(backend, "aclose", None)
+    if callable(close):
+        await close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     active = bundle_store().active_bundle()
@@ -489,9 +504,14 @@ async def lifespan(_: FastAPI):
 
     await init_image_generation()
 
-    async with dependency_probe_loop(SEARXNG_URL):
+    try:
+        # Stop metrics probes before tearing down MCP (probe was previously outer
+        # and kept hitting ComfyUI during session_manager shutdown).
         async with mcp.session_manager.run():
-            yield
+            async with dependency_probe_loop(SEARXNG_URL):
+                yield
+    finally:
+        await shutdown_image_generation()
 
 
 app = FastAPI(

@@ -69,4 +69,4 @@ Write-Host "Staging: $($env:RAG_STAGING_DIR)"
 Write-Host "State:   $($env:RAG_BUNDLE_STATE_DIR)"
 Write-Host "Embedding: $($env:EMBEDDING_URL) ($($env:EMBEDDING_MODEL))"
 
-python -m uvicorn rag_server:app --host $env:RAG_HOST --port $env:RAG_PORT
+python -m uvicorn rag_server:app --host $env:RAG_HOST --port $env:RAG_PORT --timeout-graceful-shutdown 30

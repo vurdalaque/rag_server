@@ -195,9 +195,9 @@ mkdir -p "$RAG_STAGING_DIR" "$RAG_BUNDLE_STATE_DIR"
 if [[ "$USE_UV" == true ]]; then
     echo "Runner:  $UV_BIN run python"
     if [[ -n "${VIRTUAL_ENV:-}" ]] || [[ -d "${HOME}/.venv" ]]; then
-        exec "$UV_BIN" run --active python -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT"
+        exec "$UV_BIN" run --active python -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT" --timeout-graceful-shutdown 30
     fi
-    exec "$UV_BIN" run python -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT"
+    exec "$UV_BIN" run python -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT" --timeout-graceful-shutdown 30
 fi
 
 echo "Python:  $("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
@@ -206,4 +206,4 @@ echo "Staging: ${RAG_STAGING_DIR}"
 echo "State:   ${RAG_BUNDLE_STATE_DIR}"
 echo "Embedding: ${EMBEDDING_URL} (${EMBEDDING_MODEL})"
 
-exec "$PYTHON_BIN" -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT"
+exec "$PYTHON_BIN" -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT" --timeout-graceful-shutdown 30

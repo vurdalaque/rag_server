@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from contextlib import asynccontextmanager, contextmanager
@@ -20,6 +21,8 @@ from prometheus_client import (
 )
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+logger = logging.getLogger(__name__)
 
 EMBEDDING_URL = os.getenv(
     "EMBEDDING_URL",
@@ -713,15 +716,22 @@ async def dependency_probe_loop(
         task.cancel()
 
         try:
-            await task
+            await asyncio.wait_for(task, timeout=5.0)
         except asyncio.CancelledError:
             pass
+        except asyncio.TimeoutError:
+            logger.warning(
+                "dependency probe task did not exit within 5s after cancel; continuing shutdown"
+            )
 
 
 async def _dependency_probe_worker(
     searxng_url: str,
     probe_timeout: float,
 ) -> None:
-    while True:
-        await run_dependency_probes(searxng_url, probe_timeout)
-        await asyncio.sleep(PROBE_INTERVAL)
+    try:
+        while True:
+            await run_dependency_probes(searxng_url, probe_timeout)
+            await asyncio.sleep(PROBE_INTERVAL)
+    except asyncio.CancelledError:
+        raise
