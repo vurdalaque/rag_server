@@ -1214,11 +1214,19 @@ def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
     return middleware
 
 
+def _mcp_stateless_http() -> bool:
+    return os.getenv("MCP_STATELESS_HTTP", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 mcp_app = wrap_mcp_modern_headers(
     mcp.streamable_http_app(
         streamable_http_path="/",
         json_response=True,
-        stateless_http=True,
+        stateless_http=_mcp_stateless_http(),
         transport_security=MCP_TRANSPORT_SECURITY,
     )
 )

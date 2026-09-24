@@ -492,6 +492,7 @@ class ComfyUIClient:
         workflow finishes before the socket subscribes).
         """
         started = time.monotonic()
+        last_heartbeat = started
         deadline = started + self._ws_timeout()
 
         logger.info(
@@ -557,14 +558,31 @@ class ComfyUIClient:
                             )
                             return
 
-                if time.monotonic() >= deadline:
+                now = time.monotonic()
+                if now - last_heartbeat >= 30.0:
+                    logger.info(
+                        "COMFY WAIT heartbeat prompt_id=%s elapsed=%.0fs state=%s",
+                        prompt_id,
+                        now - started,
+                        state.status,
+                    )
+                    last_heartbeat = now
+
+                if now >= deadline:
                     raise ImageGenerationTimeoutError(
                         "Timed out waiting for ComfyUI execution",
                         prompt_id=prompt_id,
                     )
 
-                remaining = deadline - time.monotonic()
+                remaining = deadline - now
                 sleep_for = min(_HISTORY_POLL_INTERVAL_SECONDS, remaining)
+                if sleep_for <= 0:
+                    continue
+
+                if ws_task.done():
+                    await asyncio.sleep(sleep_for)
+                    continue
+
                 sleep_task = asyncio.create_task(asyncio.sleep(sleep_for))
                 done, pending = await asyncio.wait(
                     {ws_task, sleep_task},
@@ -743,6 +761,58 @@ class ComfyUIClient:
         )
         return path.read_bytes()
 
+    async def fetch_output_bytes(self, image: ComfyOutputImage) -> bytes:
+        """Read generated image from disk or fall back to ComfyUI ``/view``."""
+        path = resolve_comfy_output_path(
+            self._config.comfyui_output_root,
+            image.filename,
+            image.subfolder,
+            image.type,
+        )
+        if path.is_file():
+            size = path.stat().st_size
+            logger.info(
+                "COMFY RESULT READY filename=%s bytes=%s path=%s",
+                image.filename,
+                size,
+                path,
+            )
+            return path.read_bytes()
+
+        logger.warning(
+            "ComfyUI output file missing path=%s output_root=%s; trying /view",
+            path,
+            self._config.comfyui_output_root,
+        )
+        client = await self._client()
+        try:
+            response = await client.get(
+                "/view",
+                params={
+                    "filename": image.filename,
+                    "subfolder": image.subfolder,
+                    "type": image.type,
+                },
+                timeout=self._config.output_read_timeout_seconds,
+            )
+            response.raise_for_status()
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            raise OutputMissingError(
+                "Generated output file not found",
+                filename=image.filename,
+                subfolder=image.subfolder,
+                resolved_path=str(path),
+                output_root=str(self._config.comfyui_output_root.resolve()),
+            ) from exc
+
+        data = response.content
+        logger.info(
+            "COMFY RESULT READY filename=%s bytes=%s source=view",
+            image.filename,
+            len(data),
+        )
+        return data
+
     async def run_workflow_to_history(
         self,
         workflow: dict[str, Any],
@@ -798,7 +868,7 @@ class ComfyUIClient:
             )
             results: list[dict[str, Any]] = []
             for image in outputs.images:
-                data = self.read_output_bytes(image)
+                data = await self.fetch_output_bytes(image)
                 results.append(
                     {
                         "prompt_id": outputs.prompt_id,

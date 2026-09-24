@@ -389,6 +389,28 @@ def test_run_prompt_happy_path_mocked(config: ImageGenerationConfig) -> None:
     asyncio.run(_run())
 
 
+def test_fetch_output_bytes_falls_back_to_view(config: ImageGenerationConfig) -> None:
+    image = comfy_client.ComfyOutputImage(
+        filename="result_00001.png",
+        subfolder="mcp/req-x",
+        type="output",
+    )
+    mock_http = AsyncMock()
+    view_request = httpx.Request(
+        "GET",
+        "http://127.0.0.1:8188/view",
+        params={"filename": "result_00001.png", "subfolder": "mcp/req-x", "type": "output"},
+    )
+    view_response = httpx.Response(200, content=b"PNG-VIEW", request=view_request)
+    mock_http.get = AsyncMock(return_value=view_response)
+    client = ComfyUIClient(config, http_client=mock_http)
+    client._http = mock_http
+
+    data = asyncio.run(client.fetch_output_bytes(image))
+    assert data == b"PNG-VIEW"
+    mock_http.get.assert_awaited_once()
+
+
 def test_classify_history_entry_success_with_outputs() -> None:
     entry = {
         "outputs": {

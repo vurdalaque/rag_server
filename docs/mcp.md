@@ -5,7 +5,7 @@
 - **Имя сервера:** `Project Knowledge Gateway`
 - **Версия:** `1.2.0`
 - **Endpoint:** `POST /mcp/` (mount от корня FastAPI-приложения)
-- **Транспорт:** Streamable HTTP, stateless, ответы в JSON (`json_response=true`)
+- **Транспорт:** Streamable HTTP, ответы в JSON (`json_response=true`). По умолчанию **stateful** (сессия `Mcp-Session-Id`) — надёжнее для долгих `tools/call` (`generate_image`). Stateless: `MCP_STATELESS_HTTP=true` (ChatGPT Connector).
 
 Проверка доступности без MCP-сессии:
 
