@@ -48,6 +48,73 @@ class ImageGenerationCapabilitiesOutput(BaseModel):
     safety_enabled: bool
 
 
+GENERATE_IMAGE_TOOL_DESCRIPTION = (
+    "Generate one or more images from a text prompt with optional visual inputs: "
+    "reference images (visual references / WHAT), sketch (composition and layout / HOW), "
+    "and mask (soft spatial edit-region guidance / WHERE). "
+    "Returns MCP image content blocks; metadata is in structured output (seed, timings)."
+)
+
+_REFERENCE_IMAGES_FIELD_DESCRIPTION = (
+    "Optional PNG reference images as base64 strings (same encoding as MCP ImageContent.data). "
+    "Visual references for subject, style, or content (WHAT)."
+)
+_MASK_FIELD_DESCRIPTION = (
+    "Optional single PNG mask as base64. Soft spatial edit-region guidance (WHERE); "
+    "not hard pixel locking outside the marked region."
+)
+_SKETCH_FIELD_DESCRIPTION = (
+    "Optional single PNG sketch as base64. Composition, layout, shape, and color guidance (HOW); "
+    "spatial guidance rather than strict style copying."
+)
+
+
+class GenerateImageInput(BaseModel):
+    """Canonical MCP input schema for ``generate_image`` (flat JSON object)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(description="Requested image operation or scene description.")
+    negative_prompt: str | None = Field(
+        default=None,
+        description="Optional negative prompt.",
+    )
+    width: int | None = Field(
+        default=None,
+        description="Optional output width in pixels (square generation; must equal height if both set).",
+    )
+    height: int | None = Field(
+        default=None,
+        description="Optional output height in pixels (square generation; must equal width if both set).",
+    )
+    steps: int | None = Field(default=None, description="Optional sampler steps.")
+    seed: int | None = Field(default=None, description="Optional random seed.")
+    cfg: float | None = Field(default=None, description="Optional CFG scale.")
+    sampler: str | None = Field(default=None, description="Optional sampler name.")
+    scheduler: str | None = Field(default=None, description="Optional scheduler name.")
+    image_count: int = Field(
+        default=1,
+        description="Number of images to return (1..server max).",
+    )
+    reference_images: list[str] | None = Field(
+        default=None,
+        description=_REFERENCE_IMAGES_FIELD_DESCRIPTION,
+    )
+    mask: str | None = Field(
+        default=None,
+        description=_MASK_FIELD_DESCRIPTION,
+    )
+    sketch: str | None = Field(
+        default=None,
+        description=_SKETCH_FIELD_DESCRIPTION,
+    )
+
+
+def generate_image_input_json_schema() -> dict[str, Any]:
+    """Published ``tools/list`` inputSchema for ``generate_image``."""
+    return GenerateImageInput.model_json_schema()
+
+
 class GenerateImageStructuredOutput(BaseModel):
     """Metadata for a successful generate_image call (images stay in content blocks)."""
 

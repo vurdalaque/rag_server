@@ -12,10 +12,12 @@ from mcp.types import ImageContent
 
 import image_mcp_tools
 from image_generation import GeneratedImage, ImageGenerationResult
+from image_mcp_schemas import generate_image_input_json_schema
 from image_mcp_tools import (
     IMAGE_MCP_TOOL_NAMES,
     list_mcp_tool_names,
     list_ping_tool_names,
+    published_generate_image_input_schema,
     register_image_tools,
     reset_image_mcp_registration,
 )
@@ -117,6 +119,9 @@ def test_register_image_tools_is_idempotent() -> None:
 
     tools = asyncio.run(server.list_tools())
     assert len(tools) == len(IMAGE_MCP_TOOL_NAMES)
+    generate_tool = next(tool for tool in tools if tool.name == "generate_image")
+    assert "mask" in generate_tool.input_schema.get("properties", {})
+    assert "sketch" in generate_tool.input_schema.get("properties", {})
 
 
 def test_generate_image_tool_returns_error_without_backend() -> None:
@@ -255,6 +260,61 @@ def test_generate_image_tool_schema_is_model_agnostic() -> None:
     assert "mask" in properties
     assert "sketch" in properties
     assert "unet_name" not in properties
+
+
+def test_generate_image_tools_list_input_schema_matches_canonical_model() -> None:
+    server = MCPServer("image-test-list-schema")
+    backend = MagicMock()
+    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    register_image_tools(server, backend)
+
+    tools = asyncio.run(server.list_tools())
+    generate_tool = next(tool for tool in tools if tool.name == "generate_image")
+    published = generate_tool.input_schema
+    canonical = generate_image_input_json_schema()
+
+    assert published.get("required") == ["prompt"]
+    assert "mask" not in published.get("required", [])
+    assert "sketch" not in published.get("required", [])
+    assert "reference_images" not in published.get("required", [])
+
+    for key in ("prompt", "reference_images", "mask", "sketch"):
+        assert key in published.get("properties", {})
+        assert key in canonical.get("properties", {})
+
+    mask_prop = published["properties"]["mask"]
+    sketch_prop = published["properties"]["sketch"]
+    ref_prop = published["properties"]["reference_images"]
+    assert "description" in mask_prop
+    assert "WHERE" in mask_prop["description"] or "region" in mask_prop["description"].lower()
+    assert "description" in sketch_prop
+    assert "HOW" in sketch_prop["description"] or "composition" in sketch_prop["description"].lower()
+    assert "description" in ref_prop
+    assert "WHAT" in ref_prop["description"] or "visual" in ref_prop["description"].lower()
+
+    assert published_generate_image_input_schema() == canonical
+    assert "reference images" in generate_tool.description.lower()
+    assert "mask" in generate_tool.description.lower()
+    assert "sketch" in generate_tool.description.lower()
+
+
+def test_generate_image_tools_list_via_mcp_jsonrpc() -> None:
+    """tools/list over MCPServer (same path as HTTP /mcp after initialize)."""
+    server = MCPServer("image-test-jsonrpc-list")
+    backend = MagicMock()
+    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    register_image_tools(server, backend)
+
+    listed = asyncio.run(server.list_tools())
+    names = {tool.name for tool in listed}
+    assert "generate_image" in names
+    schema = next(t for t in listed if t.name == "generate_image").input_schema
+    assert set(schema.get("properties", {})) >= {
+        "prompt",
+        "reference_images",
+        "mask",
+        "sketch",
+    }
 
 
 def test_probe_skipped_when_disabled() -> None:

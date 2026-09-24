@@ -8,6 +8,8 @@ import logging
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field
 from mcp.types import CallToolResult, ImageContent, TextContent
 
 from image_generation import GenerateImageRequest, ImageGenerationBackend
@@ -25,9 +27,15 @@ from image_reference import (
     decode_and_validate_sketch_image,
 )
 from image_mcp_schemas import (
+    GENERATE_IMAGE_TOOL_DESCRIPTION,
+    GenerateImageInput,
     GenerateImageStructuredOutput,
     ImageGenerationCapabilitiesOutput,
+    _MASK_FIELD_DESCRIPTION,
+    _REFERENCE_IMAGES_FIELD_DESCRIPTION,
+    _SKETCH_FIELD_DESCRIPTION,
     capabilities_from_backend,
+    generate_image_input_json_schema,
 )
 from rag_metrics import track_mcp_tool
 
@@ -111,40 +119,76 @@ def list_ping_tool_names() -> list[str]:
     return [name for name in list_mcp_tool_names() if name != "ping"]
 
 
+def _remove_image_tools_from_server(mcp: MCPServer) -> None:
+    for name in IMAGE_MCP_TOOL_NAMES:
+        try:
+            mcp.remove_tool(name)
+        except ToolError:
+            pass
+
+
 def register_image_tools(
     mcp: MCPServer,
     backend: ImageGenerationBackend,
 ) -> None:
     global _backend, _registered
 
-    if _registered:
-        logger.debug("image MCP tools already registered")
-        return
-
     _backend = backend
+    _remove_image_tools_from_server(mcp)
 
     @track_mcp_tool("generate_image")
     async def generate_image(
-        prompt: str,
-        negative_prompt: str | None = None,
-        width: int | None = None,
-        height: int | None = None,
-        steps: int | None = None,
-        seed: int | None = None,
-        cfg: float | None = None,
-        sampler: str | None = None,
-        scheduler: str | None = None,
-        image_count: int = 1,
-        reference_images: list[str] | None = None,
-        mask: str | None = None,
-        sketch: str | None = None,
+        prompt: Annotated[str, Field(description=GenerateImageInput.model_fields["prompt"].description)],
+        negative_prompt: Annotated[
+            str | None,
+            Field(description=GenerateImageInput.model_fields["negative_prompt"].description),
+        ] = None,
+        width: Annotated[
+            int | None,
+            Field(description=GenerateImageInput.model_fields["width"].description),
+        ] = None,
+        height: Annotated[
+            int | None,
+            Field(description=GenerateImageInput.model_fields["height"].description),
+        ] = None,
+        steps: Annotated[
+            int | None,
+            Field(description=GenerateImageInput.model_fields["steps"].description),
+        ] = None,
+        seed: Annotated[
+            int | None,
+            Field(description=GenerateImageInput.model_fields["seed"].description),
+        ] = None,
+        cfg: Annotated[
+            float | None,
+            Field(description=GenerateImageInput.model_fields["cfg"].description),
+        ] = None,
+        sampler: Annotated[
+            str | None,
+            Field(description=GenerateImageInput.model_fields["sampler"].description),
+        ] = None,
+        scheduler: Annotated[
+            str | None,
+            Field(description=GenerateImageInput.model_fields["scheduler"].description),
+        ] = None,
+        image_count: Annotated[
+            int,
+            Field(description=GenerateImageInput.model_fields["image_count"].description),
+        ] = 1,
+        reference_images: Annotated[
+            list[str] | None,
+            Field(description=_REFERENCE_IMAGES_FIELD_DESCRIPTION),
+        ] = None,
+        mask: Annotated[
+            str | None,
+            Field(description=_MASK_FIELD_DESCRIPTION),
+        ] = None,
+        sketch: Annotated[
+            str | None,
+            Field(description=_SKETCH_FIELD_DESCRIPTION),
+        ] = None,
     ) -> Annotated[CallToolResult, GenerateImageStructuredOutput]:
-        """
-        Generate one or more images from a text prompt and optional visual inputs.
-
-        Returns MCP image content blocks; metadata is in structured output (seed, timings).
-        Reference images, mask, and sketch are base64-encoded PNG payloads (or MCP ImageContent).
-        """
+        """Registered via ``add_tool``; see ``GENERATE_IMAGE_TOOL_DESCRIPTION``."""
         if _backend is None:
             logger.warning("generate_image rejected: image backend not registered")
             return CallToolResult(
@@ -304,14 +348,24 @@ def register_image_tools(
             structured_content=structured.model_dump(mode="json"),
         )
 
-    mcp.add_tool(generate_image)
+    mcp.add_tool(
+        generate_image,
+        description=GENERATE_IMAGE_TOOL_DESCRIPTION,
+    )
     mcp.add_tool(image_generation_capabilities)
     _registered = True
     logger.info("Registered MCP image tools: %s", ", ".join(IMAGE_MCP_TOOL_NAMES))
 
 
-def reset_image_mcp_registration() -> None:
-    """Test helper: clear module registration state."""
+def reset_image_mcp_registration(mcp: MCPServer | None = None) -> None:
+    """Test helper: clear module registration state and remove tools from ``mcp``."""
     global _backend, _registered
+    if mcp is not None:
+        _remove_image_tools_from_server(mcp)
     _backend = None
     _registered = False
+
+
+def published_generate_image_input_schema() -> dict[str, Any]:
+    """Input schema exposed on ``tools/list`` for ``generate_image``."""
+    return generate_image_input_json_schema()
