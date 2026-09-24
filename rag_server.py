@@ -458,20 +458,37 @@ async def upstream_stream(
 
 
 async def init_image_generation() -> None:
-    """Probe ComfyUI and register image MCP tools when available."""
+    """Probe backends and register image MCP tools when available."""
     global image_backend
 
+    from image_analysis import LlmImageAnalyzer, probe as probe_image_analysis
     from image_generation import create_comfy_backend_if_ready
-    from image_mcp_tools import register_image_tools
+    from image_mcp_backends import ImageMcpBackends
+    from image_mcp_tools import register_image_mcp_backends
+    from image_segmentation import create_comfy_segmenter_if_ready
+    from image_upscale import create_upscale_backend_if_ready
 
-    image_backend = await create_comfy_backend_if_ready()
+    generation = await create_comfy_backend_if_ready()
+    image_backend = generation
 
-    if image_backend is not None:
-        register_image_tools(mcp, image_backend)
+    analyzer = LlmImageAnalyzer() if await probe_image_analysis() else None
+
+    segmenter = await create_comfy_segmenter_if_ready()
+
+    upscaler = await create_upscale_backend_if_ready()
+
+    backends = ImageMcpBackends(
+        generation=generation,
+        analyzer=analyzer,
+        segmenter=segmenter,
+        upscaler=upscaler,
+    )
+    if backends.any_available():
+        register_image_mcp_backends(mcp, backends)
 
     from rag_metrics import set_image_generation_enabled
 
-    set_image_generation_enabled(image_backend is not None)
+    set_image_generation_enabled(generation is not None)
 
 
 async def shutdown_image_generation() -> None:

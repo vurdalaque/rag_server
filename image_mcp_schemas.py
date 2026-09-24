@@ -33,6 +33,40 @@ class ResolutionLimitsOutput(BaseModel):
     max: int
 
 
+class AnalysisCapabilityOutput(BaseModel):
+    supported: bool
+    max_images: int
+    max_bytes: int
+
+
+class SegmentationModesOutput(BaseModel):
+    text: bool
+    points: bool
+    box: bool
+    mask_refinement: bool
+
+
+class SegmentationCapabilityOutput(BaseModel):
+    supported: bool
+    max_bytes: int
+    max_dimension: int
+    mask_semantics: str
+    modes: SegmentationModesOutput
+
+
+class UpscaleCapabilityOutput(BaseModel):
+    supported: bool
+    max_input_bytes: int = 0
+    max_output_bytes: int = 0
+    max_input_dimension: int = 0
+    max_output_dimension: int = 0
+    supports_scale_factor: bool = False
+    supports_target_dimensions: bool = False
+    max_scale: float | None = None
+    min_scale: float | None = None
+    default_scale: float | None = None
+
+
 class ImageGenerationCapabilitiesOutput(BaseModel):
     backend: str
     max_images: int
@@ -46,6 +80,9 @@ class ImageGenerationCapabilitiesOutput(BaseModel):
     max_reference_images: int
     max_reference_bytes: int
     safety_enabled: bool
+    analysis: AnalysisCapabilityOutput
+    segmentation: SegmentationCapabilityOutput
+    upscale: UpscaleCapabilityOutput
 
 
 GENERATE_IMAGE_TOOL_DESCRIPTION = (
@@ -115,6 +152,128 @@ def generate_image_input_json_schema() -> dict[str, Any]:
     return GenerateImageInput.model_json_schema()
 
 
+ANALYZE_IMAGE_TOOL_DESCRIPTION = (
+    "Read-only multimodal image analysis using the configured vision-language model. "
+    "Supply one or more images and an optional instruction (e.g. describe, compare before/after)."
+)
+
+_SEGMENT_POINT_DESCRIPTION = (
+    "Normalized point prompt with x and y in [0,1] and label include (select) or exclude."
+)
+
+_SEGMENT_BOX_DESCRIPTION = (
+    "Normalized bounding box with x1,y1,x2,y2 in [0,1] (top-left to bottom-right)."
+)
+
+
+class AnalyzeImageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    images: list[str] = Field(
+        description="One or more PNG/JPEG/WebP images as base64 (same encoding as reference_images).",
+    )
+    instruction: str | None = Field(
+        default=None,
+        description="Optional natural-language analysis instruction or question.",
+    )
+
+
+class SegmentPointInput(BaseModel):
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    label: str = Field(description="include or exclude")
+
+
+class SegmentImageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    image: str = Field(description="Source image as base64 PNG.")
+    prompt: str | None = Field(
+        default=None,
+        description="Optional semantic description of the region to select (AI Select by text).",
+    )
+    points: list[SegmentPointInput] | None = Field(
+        default=None,
+        description="Deprecated: use positive_points / negative_points.",
+    )
+    positive_points: list[dict[str, float]] | None = Field(
+        default=None,
+        description="Optional normalized include click points (x, y in 0..1).",
+    )
+    negative_points: list[dict[str, float]] | None = Field(
+        default=None,
+        description="Optional normalized exclude click points (x, y in 0..1).",
+    )
+    box: dict[str, float] | None = Field(
+        default=None,
+        description=_SEGMENT_BOX_DESCRIPTION,
+    )
+    mask: str | None = Field(
+        default=None,
+        description=(
+            "Optional existing mask PNG (base64) for refinement with points; "
+            "selected=white, not selected=black."
+        ),
+    )
+
+
+class UpscaleImageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    image: str = Field(description="Source image as base64.")
+    scale: float | None = Field(
+        default=None,
+        description="Upscale factor (MVP supports 4). Defaults to server capability.",
+    )
+
+
+UPSCALE_IMAGE_TOOL_DESCRIPTION = (
+    "Neural super-resolution upscale (not ordinary geometric resize). "
+    "MVP supports scale=4 via the configured upscale model."
+)
+
+SEGMENT_IMAGE_TOOL_DESCRIPTION = (
+    "Produce a pixel selection mask for the source image (AI Select). "
+    "Combine text prompt, points, box, and optional mask refinement. "
+    "Output mask: white=selected, black=not selected."
+)
+
+
+class AnalyzeImageStructuredOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    image_count: int
+    timings: dict[str, float] = Field(default_factory=dict)
+
+
+class SegmentImageStructuredOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    width: int
+    height: int
+    timings: dict[str, float] = Field(default_factory=dict)
+
+
+class UpscaleImageStructuredOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    width: int
+    height: int
+    timings: dict[str, float] = Field(default_factory=dict)
+
+
+def analyze_image_input_json_schema() -> dict[str, Any]:
+    return AnalyzeImageInput.model_json_schema()
+
+
+def segment_image_input_json_schema() -> dict[str, Any]:
+    return SegmentImageInput.model_json_schema()
+
+
+def upscale_image_input_json_schema() -> dict[str, Any]:
+    return UpscaleImageInput.model_json_schema()
+
+
 class GenerateImageStructuredOutput(BaseModel):
     """Metadata for a successful generate_image call (images stay in content blocks)."""
 
@@ -177,6 +336,11 @@ def capabilities_from_backend(payload: dict[str, Any]) -> ImageGenerationCapabil
         ),
     )
 
+    analysis_raw = payload.get("analysis") or {}
+    segment_raw = payload.get("segmentation") or {}
+    upscale_raw = payload.get("upscale") or {}
+    modes_raw = segment_raw.get("modes") or {}
+
     return ImageGenerationCapabilitiesOutput(
         backend=str(payload.get("backend", "")),
         max_images=int(payload["max_images"]),
@@ -212,4 +376,49 @@ def capabilities_from_backend(payload: dict[str, Any]) -> ImageGenerationCapabil
             ),
         ),
         safety_enabled=safety_validation,
+        analysis=AnalysisCapabilityOutput(
+            supported=bool(analysis_raw.get("supported", False)),
+            max_images=int(analysis_raw.get("max_images", 0)),
+            max_bytes=int(analysis_raw.get("max_bytes", 0)),
+        ),
+        segmentation=SegmentationCapabilityOutput(
+            supported=bool(segment_raw.get("supported", False)),
+            max_bytes=int(segment_raw.get("max_bytes", 0)),
+            max_dimension=int(segment_raw.get("max_dimension", 0)),
+            mask_semantics=str(
+                segment_raw.get("mask_semantics", "selected_white_1_not_selected_black_0"),
+            ),
+            modes=SegmentationModesOutput(
+                text=bool(modes_raw.get("text", False)),
+                points=bool(modes_raw.get("points", False)),
+                box=bool(modes_raw.get("box", False)),
+                mask_refinement=bool(modes_raw.get("mask_refinement", False)),
+            ),
+        ),
+        upscale=UpscaleCapabilityOutput(
+            supported=bool(upscale_raw.get("supported", False)),
+            max_input_bytes=int(upscale_raw.get("max_input_bytes", 0)),
+            max_output_bytes=int(upscale_raw.get("max_output_bytes", 0)),
+            max_input_dimension=int(upscale_raw.get("max_input_dimension", 0)),
+            max_output_dimension=int(upscale_raw.get("max_output_dimension", 0)),
+            supports_scale_factor=bool(upscale_raw.get("supports_scale_factor", False)),
+            supports_target_dimensions=bool(
+                upscale_raw.get("supports_target_dimensions", False),
+            ),
+            max_scale=(
+                float(upscale_raw["max_scale"])
+                if upscale_raw.get("max_scale") is not None
+                else None
+            ),
+            min_scale=(
+                float(upscale_raw["min_scale"])
+                if upscale_raw.get("min_scale") is not None
+                else None
+            ),
+            default_scale=(
+                float(upscale_raw["default_scale"])
+                if upscale_raw.get("default_scale") is not None
+                else None
+            ),
+        ),
     )

@@ -92,6 +92,11 @@ class ComfyUIWorkflowRejectedError(ImageGenerationError):
         super().__init__("comfyui_workflow_rejected", message, details)
 
 
+class AnalysisFailedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("analysis_failed", message, details)
+
+
 class ExecutionFailedError(ImageGenerationError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__("execution_failed", message, details)
@@ -127,6 +132,26 @@ class InternalImageGenerationError(ImageGenerationError):
         super().__init__("internal_error", message, details)
 
 
+class SegmentationFailedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("segmentation_failed", message, details)
+
+
+class InvalidSegmentationInputError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_segmentation_input", message, details)
+
+
+class NotFoundError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("not_found", message, details)
+
+
+class UpscaleFailedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("upscale_failed", message, details)
+
+
 _PUBLIC_ERROR_CODE_ALIASES: dict[str, str] = {
     "execution_failed": "generation_failed",
     "output_missing": "generation_failed",
@@ -138,7 +163,9 @@ _PUBLIC_ERROR_CODE_ALIASES: dict[str, str] = {
     "too_many_images": "invalid_request",
     "unsupported_image_mime": "invalid_request",
     "input_too_large": "invalid_request",
+    "invalid_segmentation_input": "invalid_request",
     "cancelled": "invalid_request",
+    "upscale_failed": "backend_error",
 }
 
 

@@ -12,7 +12,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 from mcp.types import CallToolResult, ImageContent, TextContent
 
-from image_generation import GenerateImageRequest, ImageGenerationBackend
+from image_generation import GenerateImageRequest
+from image_mcp_backends import ImageMcpBackends
+from image_mcp_capabilities import build_platform_capabilities_payload
+from image_mcp_ops import register_image_ops_tools
 from image_generation_errors import (
     ImageGenerationError,
     InvalidMaskImageError,
@@ -51,9 +54,24 @@ CORE_MCP_TOOL_NAMES: tuple[str, ...] = (
 IMAGE_MCP_TOOL_NAMES: tuple[str, ...] = (
     "generate_image",
     "image_generation_capabilities",
+    "analyze_image",
+    "segment_image",
+    "upscale_image",
 )
 
-_backend: ImageGenerationBackend | None = None
+GENERATION_MCP_TOOL_NAMES: tuple[str, ...] = (
+    "generate_image",
+    "image_generation_capabilities",
+)
+
+IMAGE_OPS_TOOL_NAMES: tuple[str, ...] = (
+    "analyze_image",
+    "segment_image",
+    "upscale_image",
+)
+
+_backends: ImageMcpBackends | None = None
+_registered_tool_names: list[str] = []
 _registered = False
 
 
@@ -61,8 +79,14 @@ def image_tools_registered() -> bool:
     return _registered
 
 
-def get_image_backend() -> ImageGenerationBackend | None:
-    return _backend
+def get_image_backend():
+    if _backends is None:
+        return None
+    return _backends.generation
+
+
+def get_image_mcp_backends() -> ImageMcpBackends | None:
+    return _backends
 
 
 def list_mcp_tool_names(
@@ -75,7 +99,10 @@ def list_mcp_tool_names(
     names = list(CORE_MCP_TOOL_NAMES)
 
     if include_image_tools:
-        names.extend(IMAGE_MCP_TOOL_NAMES)
+        if _registered_tool_names:
+            names.extend(_registered_tool_names)
+        elif _registered:
+            names.extend(IMAGE_MCP_TOOL_NAMES)
 
     return names
 
@@ -127,13 +154,34 @@ def _remove_image_tools_from_server(mcp: MCPServer) -> None:
             pass
 
 
+def register_image_mcp_backends(
+    mcp: MCPServer,
+    backends: ImageMcpBackends,
+) -> None:
+    """Register all available image MCP tools from ``backends``."""
+    register_image_tools(mcp, backends.generation, backends=backends)
+
+
 def register_image_tools(
     mcp: MCPServer,
-    backend: ImageGenerationBackend,
+    backend,
+    *,
+    backends: ImageMcpBackends | None = None,
 ) -> None:
-    global _backend, _registered
+    global _backends, _registered, _registered_tool_names
 
-    _backend = backend
+    if backends is None:
+        backends = ImageMcpBackends(generation=backend)
+    elif backend is not None and backends.generation is None:
+        backends = ImageMcpBackends(
+            generation=backend,
+            analyzer=backends.analyzer,
+            segmenter=backends.segmenter,
+            upscaler=backends.upscaler,
+        )
+
+    _backends = backends
+    _registered_tool_names = []
     _remove_image_tools_from_server(mcp)
 
     @track_mcp_tool("generate_image")
@@ -189,7 +237,7 @@ def register_image_tools(
         ] = None,
     ) -> Annotated[CallToolResult, GenerateImageStructuredOutput]:
         """Registered via ``add_tool``; see ``GENERATE_IMAGE_TOOL_DESCRIPTION``."""
-        if _backend is None:
+        if _backends is None or _backends.generation is None:
             logger.warning("generate_image rejected: image backend not registered")
             return CallToolResult(
                 content=[
@@ -272,7 +320,7 @@ def register_image_tools(
         )
 
         try:
-            result = await _backend.generate(request)
+            result = await _backends.generation.generate(request)
         except ImageGenerationError as error:
             logger.warning(
                 "MCP generate_image failed code=%s message=%s details=%s",
@@ -319,7 +367,7 @@ def register_image_tools(
         """
         Report server image-generation limits, defaults, and sampler metadata.
         """
-        if _backend is None:
+        if _backends is None or not _backends.any_available():
             return CallToolResult(
                 content=[
                     TextContent(
@@ -329,7 +377,7 @@ def register_image_tools(
                                 "error": {
                                     "code": "backend_unavailable",
                                     "message": (
-                                        "image generation is not available "
+                                        "image capabilities are not available "
                                         "on this server"
                                     ),
                                 }
@@ -341,28 +389,46 @@ def register_image_tools(
                 is_error=True,
             )
 
-        payload = await _backend.capabilities()
+        payload = await build_platform_capabilities_payload(_backends)
         structured = capabilities_from_backend(payload)
         return CallToolResult(
             content=[],
             structured_content=structured.model_dump(mode="json"),
         )
 
-    mcp.add_tool(
-        generate_image,
-        description=GENERATE_IMAGE_TOOL_DESCRIPTION,
+    if backends.generation is not None:
+        mcp.add_tool(
+            generate_image,
+            description=GENERATE_IMAGE_TOOL_DESCRIPTION,
+        )
+        _registered_tool_names.append("generate_image")
+
+    register_image_ops_tools(
+        mcp,
+        backends,
+        error_result=_error_tool_result,
+        coerce_image=_coerce_image_base64_payload,
+        registered_names=_registered_tool_names,
     )
-    mcp.add_tool(image_generation_capabilities)
-    _registered = True
-    logger.info("Registered MCP image tools: %s", ", ".join(IMAGE_MCP_TOOL_NAMES))
+
+    if backends.any_available():
+        mcp.add_tool(image_generation_capabilities)
+        _registered_tool_names.append("image_generation_capabilities")
+
+    _registered = bool(_registered_tool_names)
+    logger.info(
+        "Registered MCP image tools: %s",
+        ", ".join(_registered_tool_names),
+    )
 
 
 def reset_image_mcp_registration(mcp: MCPServer | None = None) -> None:
     """Test helper: clear module registration state and remove tools from ``mcp``."""
-    global _backend, _registered
+    global _backends, _registered, _registered_tool_names
     if mcp is not None:
         _remove_image_tools_from_server(mcp)
-    _backend = None
+    _backends = None
+    _registered_tool_names = []
     _registered = False
 
 

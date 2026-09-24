@@ -140,10 +140,18 @@ Mcp-Method: server/discover
 |-----|------------|
 | `search_project` | Семантический поиск по индексу (основной) |
 
-> **Draft — image generation (conditional):** при `IMAGE_GENERATION_ENABLED=true` и успешном probe ComfyUI в `tools/list` появляются `generate_image` и `image_generation_capabilities`. Иначе список совпадает с базовым (см. `/health` → `mcp_tools`).
 | `ask_project` | Поиск + ответ через upstream LLM |
 | `web_search` | Поиск в интернете через SearXNG |
 | `ping` | Проверка доступности MCP |
+
+**Условные image-инструменты** (см. `/health` → `mcp_tools`):
+
+- `generate_image` + `image_generation_capabilities` — ComfyUI probe (`IMAGE_GENERATION_ENABLED`, `COMFYUI_*`).
+- `analyze_image` — multimodal LLM (`IMAGE_ANALYSIS_ENABLED`, `LLM_URL`).
+- `segment_image` — ComfyUI Grounding DINO + Kijai SAM2 (`COMFYUI_URL`, `IMAGE_SEGMENTATION_*`).
+- `upscale_image` — ComfyUI RealESRGAN (`IMAGE_UPSCALE_ENABLED`, `IMAGE_UPSCALE_COMFY_MODEL`).
+
+`image_generation_capabilities` регистрируется, если доступен **хотя бы один** image-backend (generation, analysis, segmentation или upscale). В ответе — блоки `analysis`, `segmentation`, `upscale` с `supported` и лимитами.
 
 ### Вызов инструмента (`tools/call`)
 
@@ -334,7 +342,47 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 
 ### `image_generation_capabilities` (draft, conditional)
 
-Structured JSON: `inputs.reference_images|mask|sketch` (supported, max_count, semantics), `resolution.min|max`, `defaults`, `safety_validation_enabled`, `samplers`. Deprecated aliases: `max_reference_images`, `max_reference_bytes`, `safety_enabled` (совпадают с canonical полями).
+Structured JSON: `inputs.reference_images|mask|sketch` (supported, max_count, semantics), `resolution.min|max`, `defaults`, `safety_validation_enabled`, `samplers`, плюс `analysis`, `segmentation`, `upscale` (supported, лимиты, mask semantics). Deprecated aliases: `max_reference_images`, `max_reference_bytes`, `safety_enabled` (совпадают с canonical полями).
+
+---
+
+### `analyze_image` (conditional)
+
+Read-only multimodal анализ: описание, сравнение before/after, вопросы по изображениям. Backend — тот же VLM, что `ask_project` / `LLM_URL` (не Qwen Image 2.1).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `images` | `string[]` | 1..N PNG/JPEG/WebP (base64 или MCP ImageContent) |
+| `instruction` | `string?` | Вопрос или задача анализа (опционально) |
+
+**Ответ:** `structuredContent.text` + тайминги; ошибки `analysis_failed`, `invalid_image`, `backend_unavailable`, …
+
+---
+
+### `segment_image` (conditional)
+
+Пиксельная маска через ComfyUI (DINO → SAM2 для text; SAM2 без DINO для points/box). `not_found` — если DINO не нашёл объект (SAM2 не вызывается).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `image` | `string` | Исходное изображение |
+| `prompt` | `string?` | Текстовый выбор объекта |
+| `points` | `object[]?` | `{x,y,label}` — нормализованные координаты, `label`: `include` \| `exclude` |
+| `box` | `object?` | `{x1,y1,x2,y2}` нормализованный bbox |
+| `mask` | `string?` | Существующая маска (только вместе с `points` для refinement) |
+
+---
+
+### `upscale_image` (conditional)
+
+Super-resolution / upscale (не обычный resize в Realm). Либо `scale`, либо `target_width` + `target_height` (не оба).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `image` | `string` | Исходное изображение |
+| `scale` | `number?` | Коэффициент (из capabilities) |
+| `target_width` | `integer?` | Целевая ширина |
+| `target_height` | `integer?` | Целевая высота |
 
 ---
 

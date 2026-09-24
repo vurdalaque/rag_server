@@ -14,7 +14,7 @@ import image_mcp_tools
 from image_generation import GeneratedImage, ImageGenerationResult
 from image_mcp_schemas import generate_image_input_json_schema
 from image_mcp_tools import (
-    IMAGE_MCP_TOOL_NAMES,
+    GENERATION_MCP_TOOL_NAMES,
     list_mcp_tool_names,
     list_ping_tool_names,
     published_generate_image_input_schema,
@@ -60,6 +60,30 @@ def _sample_capabilities_payload(**overrides: Any) -> dict[str, Any]:
         "safety_validation_enabled": False,
         "safety_enabled": False,
         "samplers": {"sampler_name": ["euler"], "scheduler": ["simple"]},
+        "analysis": {"supported": True, "max_images": 10, "max_bytes": 10485760},
+        "segmentation": {
+            "supported": True,
+            "max_bytes": 10485760,
+            "max_dimension": 8192,
+            "mask_semantics": "selected_white_1_not_selected_black_0",
+            "modes": {
+                "text": True,
+                "points": True,
+                "box": True,
+                "mask_refinement": True,
+            },
+        },
+        "upscale": {
+            "supported": True,
+            "max_input_bytes": 10485760,
+            "max_output_bytes": 20971520,
+            "max_input_dimension": 4096,
+            "max_output_dimension": 8192,
+            "supports_scale_factor": True,
+            "supports_target_dimensions": True,
+            "max_scale": 4.0,
+            "default_scale": 2.0,
+        },
     }
     payload.update(overrides)
     return payload
@@ -87,8 +111,13 @@ def test_list_mcp_tool_names_without_image_tools() -> None:
 
 
 def test_list_mcp_tool_names_with_image_tools() -> None:
+    server = MCPServer("image-test-list-names")
+    backend = MagicMock()
+    backend.capabilities = AsyncMock(return_value={})
+    register_image_tools(server, backend)
+
     names = list_mcp_tool_names(include_image_tools=True)
-    assert names[-2:] == list(IMAGE_MCP_TOOL_NAMES)
+    assert names[-len(GENERATION_MCP_TOOL_NAMES) :] == list(GENERATION_MCP_TOOL_NAMES)
 
 
 def test_register_image_tools_adds_tools_when_backend_available() -> None:
@@ -106,7 +135,7 @@ def test_register_image_tools_adds_tools_when_backend_available() -> None:
 
     tools = asyncio.run(server.list_tools())
     tool_names = {tool.name for tool in tools}
-    assert tool_names == set(IMAGE_MCP_TOOL_NAMES)
+    assert tool_names == set(GENERATION_MCP_TOOL_NAMES)
 
 
 def test_register_image_tools_is_idempotent() -> None:
@@ -118,7 +147,7 @@ def test_register_image_tools_is_idempotent() -> None:
     register_image_tools(server, backend)
 
     tools = asyncio.run(server.list_tools())
-    assert len(tools) == len(IMAGE_MCP_TOOL_NAMES)
+    assert len(tools) == len(GENERATION_MCP_TOOL_NAMES)
     generate_tool = next(tool for tool in tools if tool.name == "generate_image")
     assert "mask" in generate_tool.input_schema.get("properties", {})
     assert "sketch" in generate_tool.input_schema.get("properties", {})
@@ -164,7 +193,7 @@ def test_image_tools_publish_output_schema() -> None:
     tools = asyncio.run(server.list_tools())
     by_name = {tool.name: tool for tool in tools}
 
-    for name in IMAGE_MCP_TOOL_NAMES:
+    for name in GENERATION_MCP_TOOL_NAMES:
         schema = by_name[name].output_schema
         assert isinstance(schema, dict)
         assert schema.get("type") == "object"

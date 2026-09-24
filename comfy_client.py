@@ -658,6 +658,40 @@ class ComfyUIClient:
         )
         return path.read_bytes()
 
+    async def run_workflow_to_history(
+        self,
+        workflow: dict[str, Any],
+        *,
+        request_id: str,
+        cancel_event: asyncio.Event | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Submit workflow and return ``(prompt_id, history)`` without requiring SaveImage."""
+        prompt_id = await self.submit_prompt(workflow, request_id)
+        await self.wait_for_prompt_terminal(
+            prompt_id,
+            request_id,
+            cancel_event=cancel_event,
+        )
+        history = await self.fetch_history(prompt_id)
+        return prompt_id, history
+
+    @staticmethod
+    def extract_node_outputs(
+        history: dict[str, Any],
+        prompt_id: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        entry = ComfyUIClient.history_entry_for_prompt(history, prompt_id)
+        if entry is None:
+            return {}
+        outputs = entry.get("outputs") or {}
+        if not isinstance(outputs, dict):
+            return {}
+        node_output = outputs.get(node_id)
+        if isinstance(node_output, dict):
+            return node_output
+        return {}
+
     async def run_workflow(
         self,
         workflow: dict[str, Any],
