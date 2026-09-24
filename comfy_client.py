@@ -302,7 +302,12 @@ class ComfyUIClient:
         prompt_id = payload.get("prompt_id")
         if not prompt_id:
             raise InternalImageGenerationError("ComfyUI prompt response missing prompt_id")
-        logger.info("COMFY SUBMIT prompt_id=%s client_id=%s", prompt_id, client_id)
+        logger.info(
+            "COMFY SUBMIT prompt_id=%s client_id=%s",
+            prompt_id,
+            client_id,
+        )
+        logger.info("COMFY QUEUED prompt_id=%s", prompt_id)
         return str(prompt_id)
 
     async def fetch_history(self, prompt_id: str) -> dict[str, Any]:
@@ -399,15 +404,37 @@ class ComfyUIClient:
         if output_count > 0:
             return PromptHistoryState("success", output_count)
 
-        if isinstance(status, dict) and (
-            status_str == "success" or status.get("completed") is True
-        ):
+        if ComfyUIClient._history_terminal_success(entry):
             return PromptHistoryState("success", output_count)
 
-        if entry.get("outputs"):
-            return PromptHistoryState("running", output_count)
+        outputs = entry.get("outputs")
+        if isinstance(outputs, dict) and outputs:
+            # ComfyUI only commits history at task_done; non-empty outputs without
+            # images usually mean a finished graph where SaveImage metadata is delayed
+            # or missing — do not treat as infinite "running".
+            if isinstance(status, dict) and status_str == "running":
+                return PromptHistoryState("running", output_count)
+            return PromptHistoryState("pending", output_count)
 
         return PromptHistoryState("pending", output_count)
+
+    @staticmethod
+    def _history_terminal_success(entry: dict[str, Any]) -> bool:
+        status = entry.get("status")
+        if not isinstance(status, dict):
+            return False
+        status_str = str(status.get("status_str") or "").lower()
+        if status_str == "success" or status.get("completed") is True:
+            return True
+        messages = status.get("messages") or []
+        if not isinstance(messages, list):
+            return False
+        for message in messages:
+            if not isinstance(message, (list, tuple)) or not message:
+                continue
+            if message[0] in ("execution_success", "execution_cached"):
+                return True
+        return False
 
     @staticmethod
     def _history_execution_error(entry: dict[str, Any]) -> str | None:
@@ -467,6 +494,11 @@ class ComfyUIClient:
         started = time.monotonic()
         deadline = started + self._ws_timeout()
 
+        logger.info(
+            "COMFY WAITER REGISTER prompt_id=%s client_id=%s",
+            prompt_id,
+            client_id,
+        )
         ws_task = asyncio.create_task(
             self.wait_for_prompt_ws(
                 prompt_id,
@@ -481,7 +513,11 @@ class ComfyUIClient:
 
                 state = await self.inspect_history_state(prompt_id)
                 logger.info(
-                    "COMFY HISTORY prompt_id=%s state=%s outputs=%s",
+                    "COMFY HISTORY CHECK prompt_id=%s",
+                    prompt_id,
+                )
+                logger.info(
+                    "COMFY HISTORY STATE prompt_id=%s state=%s outputs=%s",
                     prompt_id,
                     state.status,
                     state.output_count,
@@ -496,6 +532,31 @@ class ComfyUIClient:
                     )
                     return
 
+                if ws_task.done():
+                    try:
+                        ws_task.result()
+                    except ExecutionFailedError:
+                        state = await self.inspect_history_state(prompt_id)
+                        self._raise_if_history_error(state, prompt_id)
+                        raise
+                    except Exception:
+                        logger.warning(
+                            "COMFY WS ended without terminal history prompt_id=%s",
+                            prompt_id,
+                        )
+                    else:
+                        state = await self.inspect_history_state(prompt_id)
+                        if state.is_terminal:
+                            self._raise_if_history_error(state, prompt_id)
+                            logger.info(
+                                "COMFY TERMINAL prompt_id=%s state=%s "
+                                "elapsed=%.3fs source=ws_reconcile",
+                                prompt_id,
+                                state.status,
+                                time.monotonic() - started,
+                            )
+                            return
+
                 if time.monotonic() >= deadline:
                     raise ImageGenerationTimeoutError(
                         "Timed out waiting for ComfyUI execution",
@@ -503,9 +564,25 @@ class ComfyUIClient:
                     )
 
                 remaining = deadline - time.monotonic()
-                await asyncio.sleep(
-                    min(_HISTORY_POLL_INTERVAL_SECONDS, remaining),
+                sleep_for = min(_HISTORY_POLL_INTERVAL_SECONDS, remaining)
+                sleep_task = asyncio.create_task(asyncio.sleep(sleep_for))
+                done, pending = await asyncio.wait(
+                    {ws_task, sleep_task},
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+                for task in pending:
+                    task.cancel()
+                for task in done:
+                    if task is sleep_task:
+                        continue
+                    if task.cancelled():
+                        continue
+                    exc = task.exception()
+                    if exc is not None:
+                        if isinstance(exc, ExecutionFailedError):
+                            state = await self.inspect_history_state(prompt_id)
+                            self._raise_if_history_error(state, prompt_id)
+                        raise exc
         finally:
             ws_task.cancel()
             try:
@@ -557,7 +634,8 @@ class ComfyUIClient:
                         else None
                     )
                     logger.info(
-                        "COMFY WS event=%s prompt_id=%s",
+                        "COMFY WS EVENT prompt_id=%s type=%s event_prompt_id=%s",
+                        prompt_id,
                         msg_type,
                         event_prompt_id,
                     )
@@ -609,9 +687,14 @@ class ComfyUIClient:
                 "ComfyUI completed without output images",
                 prompt_id=prompt_id,
             )
+        logger.info(
+            "COMFY OUTPUTS prompt_id=%s count=%s",
+            prompt_id,
+            len(images),
+        )
         for image in images:
             logger.info(
-                "COMFY OUTPUT prompt_id=%s filename=%s subfolder=%s",
+                "COMFY OUTPUT FETCH prompt_id=%s filename=%s subfolder=%s",
                 prompt_id,
                 image.filename,
                 image.subfolder,
@@ -651,10 +734,12 @@ class ComfyUIClient:
                 resolved_path=str(path),
                 output_root=str(self._config.comfyui_output_root.resolve()),
             )
+        size = path.stat().st_size
         logger.info(
-            "ComfyUI output read path=%s bytes=%s",
+            "COMFY RESULT READY filename=%s bytes=%s path=%s",
+            image.filename,
+            size,
             path,
-            path.stat().st_size,
         )
         return path.read_bytes()
 
@@ -700,28 +785,33 @@ class ComfyUIClient:
         timeout: float | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> list[dict[str, Any]]:
+        previous_timeout = self._timeout_override
         if timeout is not None:
             self._timeout_override = timeout
-        seed_used = int(workflow.get("5", {}).get("inputs", {}).get("seed", 0))
-        outputs = await self.run_prompt(
-            workflow,
-            seed_used=seed_used,
-            client_id=request_id,
-            cancel_event=cancel_event,
-        )
-        results: list[dict[str, Any]] = []
-        for image in outputs.images:
-            data = self.read_output_bytes(image)
-            results.append(
-                {
-                    "filename": image.filename,
-                    "subfolder": image.subfolder,
-                    "type": image.type,
-                    "data": data,
-                    "mime_type": "image/png",
-                },
+        try:
+            seed_used = int(workflow.get("5", {}).get("inputs", {}).get("seed", 0))
+            outputs = await self.run_prompt(
+                workflow,
+                seed_used=seed_used,
+                client_id=request_id,
+                cancel_event=cancel_event,
             )
-        return results
+            results: list[dict[str, Any]] = []
+            for image in outputs.images:
+                data = self.read_output_bytes(image)
+                results.append(
+                    {
+                        "prompt_id": outputs.prompt_id,
+                        "filename": image.filename,
+                        "subfolder": image.subfolder,
+                        "type": image.type,
+                        "data": data,
+                        "mime_type": "image/png",
+                    },
+                )
+            return results
+        finally:
+            self._timeout_override = previous_timeout
 
 
 def _message_matches_prompt(message: dict[str, Any], prompt_id: str) -> bool:

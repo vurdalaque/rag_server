@@ -388,7 +388,8 @@ class ComfyUIBackend:
                     request_id=request_id,
                     timeout=self._config.generate_timeout,
                 )
-                last_prompt_id = request_id
+                if raw_images:
+                    last_prompt_id = str(raw_images[0].get("prompt_id") or request_id)
 
                 for item in raw_images:
                     blob = item["data"]

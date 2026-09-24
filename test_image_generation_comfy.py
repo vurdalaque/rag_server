@@ -23,6 +23,7 @@ from comfy_workflow import (
 from image_generation_errors import (
     ImageGenerationTimeoutError,
     OutputInvalidError,
+    OutputMissingError,
     TooManyImagesError,
     UnsupportedParameterError,
 )
@@ -581,5 +582,201 @@ def test_wait_terminal_parallel_prompts_independent(config: ImageGenerationConfi
                     client.wait_for_prompt_terminal("pid-a", "client-a"),
                     client.wait_for_prompt_terminal("pid-b", "client-b"),
                 )
+
+    asyncio.run(_run())
+
+
+def test_classify_history_execution_success_message_without_images() -> None:
+    entry = {
+        "outputs": {},
+        "status": {
+            "status_str": "",
+            "completed": False,
+            "messages": [
+                ["execution_success", {"prompt_id": "pid-1"}],
+            ],
+        },
+    }
+    state = comfy_client.ComfyUIClient.classify_history_entry(entry)
+    assert state.status == "success"
+    assert state.output_count == 0
+
+
+def test_classify_history_nonempty_outputs_without_images_not_running() -> None:
+    entry = {
+        "outputs": {"12": {"text": ["intermediate"]}},
+        "status": {"status_str": "", "completed": False, "messages": []},
+    }
+    state = comfy_client.ComfyUIClient.classify_history_entry(entry)
+    assert state.status == "pending"
+    assert state.is_terminal is False
+
+
+def test_classify_history_execution_error_is_terminal() -> None:
+    entry = {
+        "outputs": {},
+        "status": {
+            "status_str": "error",
+            "completed": True,
+            "messages": [
+                [
+                    "execution_error",
+                    {"exception_message": "boom", "prompt_id": "pid-err"},
+                ],
+            ],
+        },
+    }
+    state = comfy_client.ComfyUIClient.classify_history_entry(entry)
+    assert state.status == "error"
+    assert state.is_terminal is True
+
+
+def test_wait_terminal_history_completed_before_ws_subscribe(config: ImageGenerationConfig) -> None:
+    history = {
+        "early-pid": {
+            "outputs": {
+                "7": {
+                    "images": [
+                        {"filename": "early.png", "subfolder": "", "type": "output"},
+                    ],
+                },
+            },
+            "status": {"status_str": "success", "completed": True, "messages": []},
+        },
+    }
+
+    class BlockingWS:
+        def __init__(self, _url: str) -> None:
+            pass
+
+        async def __aenter__(self) -> BlockingWS:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def recv(self) -> str:
+            await asyncio.sleep(3600)
+            return json.dumps({"type": "status", "data": {}})
+
+    client = ComfyUIClient(config, http_client=AsyncMock())
+    client.fetch_history = AsyncMock(return_value=history)
+
+    with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
+        with patch.object(comfy_client.websockets, "connect", BlockingWS):
+            asyncio.run(client.wait_for_prompt_terminal("early-pid", "client-1"))
+
+
+def test_wait_terminal_ws_success_reconciles_history(config: ImageGenerationConfig) -> None:
+    calls = {"n": 0}
+
+    async def fetch_history(_prompt_id: str) -> dict[str, object]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {}
+        return {
+            "ws-pid": {
+                "outputs": {
+                    "7": {
+                        "images": [
+                            {"filename": "ws.png", "subfolder": "", "type": "output"},
+                        ],
+                    },
+                },
+                "status": {"status_str": "success", "completed": True, "messages": []},
+            },
+        }
+
+    messages = [
+        json.dumps(
+            {"type": "execution_success", "data": {"prompt_id": "ws-pid"}},
+        ),
+    ]
+
+    class FakeWS:
+        def __init__(self, _url: str) -> None:
+            self._messages = list(messages)
+
+        async def __aenter__(self) -> FakeWS:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def recv(self) -> str:
+            if self._messages:
+                return self._messages.pop(0)
+            await asyncio.sleep(3600)
+            return json.dumps({"type": "status", "data": {}})
+
+    client = ComfyUIClient(config, http_client=AsyncMock())
+    client.fetch_history = AsyncMock(side_effect=fetch_history)
+
+    with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.05):
+        with patch.object(comfy_client.websockets, "connect", FakeWS):
+            asyncio.run(client.wait_for_prompt_terminal("ws-pid", "client-1"))
+
+    assert calls["n"] >= 2
+
+
+def test_run_prompt_completed_without_output_images_raises(config: ImageGenerationConfig) -> None:
+    history = {
+        "no-img": {
+            "outputs": {},
+            "status": {
+                "status_str": "success",
+                "completed": True,
+                "messages": [["execution_success", {"prompt_id": "no-img"}]],
+            },
+        },
+    }
+
+    client = ComfyUIClient(config, http_client=AsyncMock())
+    client.submit_prompt = AsyncMock(return_value="no-img")
+    client.wait_for_prompt_terminal = AsyncMock()
+    client.fetch_history = AsyncMock(return_value=history)
+
+    with pytest.raises(OutputMissingError):
+        asyncio.run(
+            client.run_prompt(
+                {"5": {"inputs": {"seed": 1}}},
+                seed_used=1,
+                client_id="c1",
+            ),
+        )
+
+
+def test_wait_terminal_cancelled_cleans_up_ws_task(config: ImageGenerationConfig) -> None:
+    cancel = asyncio.Event()
+
+    class SlowWS:
+        def __init__(self, _url: str) -> None:
+            pass
+
+        async def __aenter__(self) -> SlowWS:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def recv(self) -> str:
+            await asyncio.sleep(3600)
+            return json.dumps({"type": "status", "data": {}})
+
+    client = ComfyUIClient(config, http_client=AsyncMock())
+    client.fetch_history = AsyncMock(return_value={})
+
+    async def _run() -> None:
+        cancel.set()
+        with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.01):
+            with patch.object(comfy_client.websockets, "connect", SlowWS):
+                from image_generation_errors import CancelledError
+
+                with pytest.raises(CancelledError):
+                    await client.wait_for_prompt_terminal(
+                        "cancel-pid",
+                        "client-1",
+                        cancel_event=cancel,
+                    )
 
     asyncio.run(_run())

@@ -358,6 +358,10 @@ def register_image_tools(
             len(content),
             structured.seed,
         )
+        logger.info(
+            "MCP TOOL FINISHED generate_image prompt_id=%s",
+            result.prompt_id,
+        )
         return tool_result
 
     @track_mcp_tool("image_generation_capabilities")
