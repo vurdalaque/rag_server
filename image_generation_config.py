@@ -84,7 +84,8 @@ class ImageGenerationConfig:
 
     @property
     def max_input_images(self) -> int:
-        return self.max_reference_images
+        """Max LoadImage slots per workflow (references + optional sketch + mask)."""
+        return self.max_reference_images + 2
 
     @property
     def max_input_bytes(self) -> int:

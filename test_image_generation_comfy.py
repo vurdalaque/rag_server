@@ -141,7 +141,7 @@ def test_eleven_images_rejected_before_build(config: ImageGenerationConfig) -> N
         WorkflowBuildParams(
             request_id="req-1",
             prompt="x",
-            input_image_names=tuple(f"i{n}.png" for n in range(11)),
+            input_image_names=tuple(f"i{n}.png" for n in range(13)),
         )
     with pytest.raises(TooManyImagesError):
         validate_generation_params(
@@ -152,7 +152,7 @@ def test_eleven_images_rejected_before_build(config: ImageGenerationConfig) -> N
             sampler_name="euler",
             scheduler="simple",
             denoise=1.0,
-            input_image_count=11,
+            input_image_count=13,
         )
 
 

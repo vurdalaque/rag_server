@@ -18,7 +18,12 @@ from image_reference import (
     decode_reference_image_base64,
     validate_reference_image_bytes,
 )
-from image_generation_errors import InvalidReferenceImageError
+from image_generation_errors import (
+    InvalidMaskImageError,
+    InvalidReferenceImageError,
+    InvalidSketchImageError,
+)
+from image_reference import decode_and_validate_mask_image, decode_and_validate_sketch_image
 from image_mcp_tools import register_image_tools, reset_image_mcp_registration
 from mcp.server.mcpserver import MCPServer
 
@@ -65,6 +70,22 @@ def test_truncated_png_rejected() -> None:
         decode_and_validate_reference_image(encoded, index=2)
     assert exc.value.code == "invalid_reference_image"
     assert exc.value.details["index"] == 2
+
+
+def test_truncated_mask_rejected() -> None:
+    data = _rgb_png_256()[:-80]
+    encoded = base64.b64encode(data).decode("ascii")
+    with pytest.raises(InvalidMaskImageError) as exc:
+        decode_and_validate_mask_image(encoded)
+    assert exc.value.code == "invalid_mask"
+
+
+def test_truncated_sketch_rejected() -> None:
+    data = _rgb_png_256()[:-80]
+    encoded = base64.b64encode(data).decode("ascii")
+    with pytest.raises(InvalidSketchImageError) as exc:
+        decode_and_validate_sketch_image(encoded)
+    assert exc.value.code == "invalid_sketch"
 
 
 def test_upload_verify_detects_corruption_on_wire() -> None:
@@ -164,6 +185,7 @@ def test_upload_references_calls_verify(monkeypatch: pytest.MonkeyPatch) -> None
     mock_client.verify_uploaded_image_bytes = AsyncMock()
     backend._client_instance = lambda: mock_client  # type: ignore[method-assign]
 
-    asyncio.run(backend._upload_references((png,)))
+    request = GenerateImageRequest(prompt="x", reference_images=(png,))
+    asyncio.run(backend._build_workflow_image_inputs(request))
     mock_client.upload_image.assert_awaited_once()
     mock_client.verify_uploaded_image_bytes.assert_awaited_once()

@@ -28,6 +28,26 @@ def _sample_capabilities_payload(**overrides: Any) -> dict[str, Any]:
         "max_output_bytes": 20971520,
         "max_reference_images": 10,
         "max_reference_bytes": 10485760,
+        "inputs": {
+            "reference_images": {
+                "supported": True,
+                "max_count": 10,
+                "max_bytes": 10485760,
+            },
+            "mask": {
+                "supported": True,
+                "max_count": 1,
+                "max_bytes": 10485760,
+                "semantics": "soft_region_guidance",
+            },
+            "sketch": {
+                "supported": True,
+                "max_count": 1,
+                "max_bytes": 10485760,
+                "semantics": "composition_guidance",
+            },
+        },
+        "resolution": {"min": 256, "max": 2048},
         "defaults": {
             "resolution": 1024,
             "steps": 25,
@@ -35,6 +55,7 @@ def _sample_capabilities_payload(**overrides: Any) -> dict[str, Any]:
             "sampler": "euler",
             "scheduler": "simple",
         },
+        "safety_validation_enabled": False,
         "safety_enabled": False,
         "samplers": {"sampler_name": ["euler"], "scheduler": ["simple"]},
     }
@@ -159,6 +180,9 @@ def test_capabilities_structured_output_matches_schema() -> None:
     assert result.structured_content is not None
     jsonschema.validate(instance=result.structured_content, schema=cap_tool.output_schema)
     assert result.structured_content["samplers"]["sampler_name"] == ["euler"]
+    assert result.structured_content["inputs"]["mask"]["semantics"] == "soft_region_guidance"
+    assert result.structured_content["safety_validation_enabled"] is False
+    assert result.structured_content["max_reference_images"] == 10
 
 
 def test_generate_image_success_structured_output_and_images() -> None:
@@ -228,6 +252,8 @@ def test_generate_image_tool_schema_is_model_agnostic() -> None:
     assert "prompt" in properties
     assert "sampler" in properties
     assert "scheduler" in properties
+    assert "mask" in properties
+    assert "sketch" in properties
     assert "unet_name" not in properties
 
 

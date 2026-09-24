@@ -14,9 +14,10 @@ from comfy_client import ComfyUIClient
 from image_generation_config import ImageGenerationConfig, load_image_generation_config
 from image_generation_errors import (
     ImageGenerationError,
-    InvalidReferenceImageError,
     InvalidRequestError,
+    OutputTooLargeError,
     SafetyRejectedError,
+    TooManyImagesError,
 )
 from image_reference import (
     canonicalize_reference_png_for_comfy,
@@ -56,6 +57,8 @@ class GenerateImageRequest:
     scheduler: str | None = None
     image_count: int = 1
     reference_images: tuple[bytes, ...] = ()
+    mask: bytes | None = None
+    sketch: bytes | None = None
 
 
 @runtime_checkable
@@ -176,6 +179,13 @@ class ComfyUIBackend:
                 max_images=self._config.max_images,
             )
 
+        if len(request.reference_images) > self._config.max_reference_images:
+            raise TooManyImagesError(
+                f"At most {self._config.max_reference_images} reference images are allowed",
+                count=len(request.reference_images),
+                max_images=self._config.max_reference_images,
+            )
+
         negative = request.negative_prompt
 
         if negative is not None and len(negative) > 8000:
@@ -197,58 +207,90 @@ class ComfyUIBackend:
             scheduler=request.scheduler,
             image_count=request.image_count,
             reference_images=request.reference_images,
+            mask=request.mask,
+            sketch=request.sketch,
         )
 
-    async def _upload_references(
+    async def _upload_png_input(
         self,
-        references: tuple[bytes, ...],
-    ) -> tuple[str, ...]:
-        if not references:
-            return ()
-
+        blob: bytes,
+        *,
+        upload_name: str,
+        label: str,
+        index: int | None = None,
+    ) -> str:
         client = self._client_instance()
-        names: list[str] = []
+        digest_before = reference_sha256(blob)
+        logger.info(
+            "image input ok kind=%s index=%s bytes=%s sha256=%s",
+            label,
+            index,
+            len(blob),
+            digest_before[:16],
+        )
 
-        for index, raw in enumerate(references):
+        if "image/png" not in self._config.allowed_input_mime_types:
+            raise InvalidRequestError(
+                "input image mime type is not allowed",
+                mime_type="image/png",
+                allowed=sorted(self._config.allowed_input_mime_types),
+            )
+
+        if len(blob) > self._config.max_reference_bytes:
+            details: dict[str, Any] = {
+                "max_bytes": self._config.max_reference_bytes,
+                "kind": label,
+            }
+            if index is not None:
+                details["index"] = index
+            raise InvalidRequestError(
+                "input image exceeds size limit",
+                **details,
+            )
+
+        uploaded = await client.upload_image(upload_name, blob, "image/png")
+        await client.verify_uploaded_image_bytes(uploaded, blob, sha256_before=digest_before)
+        return uploaded.name
+
+    async def _build_workflow_image_inputs(
+        self,
+        request: GenerateImageRequest,
+    ) -> tuple[comfy_workflow.WorkflowImageInput, ...]:
+        slots: list[comfy_workflow.WorkflowImageInput] = []
+
+        for index, raw in enumerate(request.reference_images):
             blob = canonicalize_reference_png_for_comfy(raw, index=index)
-            digest_before = reference_sha256(blob)
-            if raw != blob:
-                logger.info(
-                    "reference image re-encoded for ComfyUI index=%s raw_bytes=%s png_bytes=%s",
-                    index,
-                    len(raw),
-                    len(blob),
-                )
-            logger.info(
-                "reference image ok index=%s bytes=%s sha256=%s",
-                index,
-                len(blob),
-                digest_before[:16],
-            )
-
-            if "image/png" not in self._config.allowed_input_mime_types:
-                raise InvalidRequestError(
-                    "reference image mime type is not allowed",
-                    mime_type="image/png",
-                    allowed=sorted(self._config.allowed_input_mime_types),
-                )
-
-            if len(blob) > self._config.max_reference_bytes:
-                raise InvalidRequestError(
-                    "reference image exceeds size limit",
-                    index=index,
-                    max_bytes=self._config.max_reference_bytes,
-                )
-
-            uploaded = await client.upload_image(
-                f"ref_{index}.png",
+            name = await self._upload_png_input(
                 blob,
-                "image/png",
+                upload_name=f"ref_{index}.png",
+                label="reference",
+                index=index,
             )
-            await client.verify_uploaded_image_bytes(uploaded, blob, sha256_before=digest_before)
-            names.append(uploaded.name)
+            slots.append(comfy_workflow.WorkflowImageInput(name, "reference"))
 
-        return tuple(names)
+        if request.sketch is not None:
+            from image_reference import canonicalize_png_for_comfy
+
+            blob = canonicalize_png_for_comfy(request.sketch, role="sketch")
+            name = await self._upload_png_input(
+                blob,
+                upload_name="sketch.png",
+                label="sketch",
+            )
+            slots.append(comfy_workflow.WorkflowImageInput(name, "sketch"))
+
+        if request.mask is not None:
+            from image_reference import canonicalize_png_for_comfy
+
+            blob = canonicalize_png_for_comfy(request.mask, role="mask")
+            name = await self._upload_png_input(
+                blob,
+                upload_name="mask.png",
+                label="mask",
+            )
+            slots.append(comfy_workflow.WorkflowImageInput(name, "mask"))
+
+        return tuple(slots)
 
     async def generate(
         self,
@@ -258,10 +300,16 @@ class ComfyUIBackend:
         client = self._client_instance()
         safety = self._safety_validator()
 
-        safety_images = [
+        safety_images: list[SafetyImage] = [
             SafetyImage(mime_type=_guess_mime(blob, index), data=blob)
             for index, blob in enumerate(validated.reference_images)
         ]
+        if validated.sketch is not None:
+            safety_images.append(
+                SafetyImage(mime_type="image/png", data=validated.sketch),
+            )
+        if validated.mask is not None:
+            safety_images.append(SafetyImage(mime_type="image/png", data=validated.mask))
 
         with track_image_stage("safety"):
             safety_result = await safety.validate(
@@ -282,7 +330,7 @@ class ComfyUIBackend:
 
             record_image_generation("safety", "success")
 
-        reference_names = await self._upload_references(validated.reference_images)
+        workflow_image_inputs = await self._build_workflow_image_inputs(validated)
 
         generated: list[GeneratedImage] = []
         seed_used: int | None = validated.seed
@@ -317,15 +365,14 @@ class ComfyUIBackend:
                     request_id=request_id,
                     prompt=validated.prompt,
                     negative_prompt=validated.negative_prompt or "",
-                    resolution=validated.width
-                    or validated.height
-                    or self._config.default_resolution,
+                    width=validated.width,
+                    height=validated.height,
                     seed=validated.seed,
                     steps=validated.steps,
                     cfg=validated.cfg,
                     sampler_name=validated.sampler,
                     scheduler=validated.scheduler,
-                    input_image_names=reference_names,
+                    image_inputs=workflow_image_inputs,
                 )
                 built = comfy_workflow.build_image_workflow(
                     params,
@@ -349,7 +396,7 @@ class ComfyUIBackend:
 
                     if total_bytes > self._config.max_output_bytes:
                         record_image_generation("generate", "error")
-                        raise InvalidRequestError(
+                        raise OutputTooLargeError(
                             "generated output exceeds server byte limit",
                             max_bytes=self._config.max_output_bytes,
                         )
@@ -394,6 +441,29 @@ class ComfyUIBackend:
             "max_output_bytes": self._config.max_output_bytes,
             "max_reference_images": self._config.max_reference_images,
             "max_reference_bytes": self._config.max_reference_bytes,
+            "inputs": {
+                "reference_images": {
+                    "supported": True,
+                    "max_count": self._config.max_reference_images,
+                    "max_bytes": self._config.max_reference_bytes,
+                },
+                "mask": {
+                    "supported": True,
+                    "max_count": 1,
+                    "max_bytes": self._config.max_reference_bytes,
+                    "semantics": "soft_region_guidance",
+                },
+                "sketch": {
+                    "supported": True,
+                    "max_count": 1,
+                    "max_bytes": self._config.max_reference_bytes,
+                    "semantics": "composition_guidance",
+                },
+            },
+            "resolution": {
+                "min": self._config.min_resolution,
+                "max": self._config.max_resolution,
+            },
             "defaults": {
                 "resolution": self._config.default_resolution,
                 "steps": self._config.default_steps,
@@ -401,6 +471,7 @@ class ComfyUIBackend:
                 "sampler": self._config.default_sampler,
                 "scheduler": self._config.default_scheduler,
             },
+            "safety_validation_enabled": self._config.safety_enabled,
             "safety_enabled": self._config.safety_enabled,
         }
 

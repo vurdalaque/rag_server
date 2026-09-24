@@ -318,11 +318,15 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 | `sampler` | `string?` | server default | Имя sampler |
 | `scheduler` | `string?` | server default | Scheduler |
 | `image_count` | `integer` | `1` | Количество изображений (≤ policy) |
-| `reference_images` | `string[]?` | `null` | Base64 reference images |
+| `reference_images` | `string[]?` | `null` | До 10 PNG (base64 или MCP ImageContent): визуальные референсы (WHAT) |
+| `sketch` | `string?` | `null` | Один PNG: композиция / layout (HOW), мягкая spatial guidance |
+| `mask` | `string?` | `null` | Один PNG: мягкая region guidance (WHERE), не hard inpainting |
 
-**Ответ:** MCP `CallToolResult` — блоки `image` (base64) в `content`; метаданные (`seed`, `prompt_id`, `image_count`, `timings`) в `structuredContent` + `outputSchema` в discovery. `image_generation_capabilities` возвращает structured JSON с лимитами и `samplers`.
+Пока backend Qwen Image 2.1 квадратный: если заданы **и** `width`, **и** `height` и они **не равны** — `unsupported_parameter` с `constraint: width_must_equal_height`. Одно поле или равные значения задают квадратное разрешение.
 
-**Ошибки:** JSON `{"error": {"code", "message", "details?"}}` — например `backend_unavailable`, `safety_blocked`, `invalid_prompt`.
+**Ответ:** MCP `CallToolResult` — блоки `image` (base64) в `content`; метаданные (`seed`, `prompt_id`, `image_count`, `timings`) в `structuredContent` + `outputSchema` в discovery.
+
+**Ошибки:** JSON `{"error": {"code", "message", "details?"}}` — в т.ч. `invalid_reference_image`, `invalid_mask`, `invalid_sketch`, `unsupported_parameter`, `safety_rejected`, `backend_unavailable`, `backend_error`, `generation_failed`, `output_too_large`, `timeout`.
 
 Переменные: `IMAGE_GENERATION_*`, `COMFYUI_*` в `env.example`.
 
@@ -330,7 +334,7 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 
 ### `image_generation_capabilities` (draft, conditional)
 
-Возвращает лимиты сервера (`max_images`, `max_output_bytes`, reference limits), defaults (resolution, steps, cfg, sampler) и при доступности ComfyUI — enum sampler/scheduler из `/object_info`.
+Structured JSON: `inputs.reference_images|mask|sketch` (supported, max_count, semantics), `resolution.min|max`, `defaults`, `safety_validation_enabled`, `samplers`. Deprecated aliases: `max_reference_images`, `max_reference_bytes`, `safety_enabled` (совпадают с canonical полями).
 
 ---
 

@@ -37,6 +37,16 @@ class InvalidReferenceImageError(ImageGenerationError):
         super().__init__("invalid_reference_image", message, details)
 
 
+class InvalidMaskImageError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_mask", message, details)
+
+
+class InvalidSketchImageError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_sketch", message, details)
+
+
 class UnsupportedParameterError(ImageGenerationError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__("unsupported_parameter", message, details)
@@ -107,6 +117,31 @@ class OutputInvalidError(ImageGenerationError):
         super().__init__("output_invalid", message, details)
 
 
+class OutputTooLargeError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("output_too_large", message, details)
+
+
 class InternalImageGenerationError(ImageGenerationError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__("internal_error", message, details)
+
+
+_PUBLIC_ERROR_CODE_ALIASES: dict[str, str] = {
+    "execution_failed": "generation_failed",
+    "output_missing": "generation_failed",
+    "output_invalid": "generation_failed",
+    "comfyui_unavailable": "backend_unavailable",
+    "comfyui_workflow_rejected": "backend_error",
+    "internal_error": "backend_error",
+    "safety_backend_failure": "backend_error",
+    "too_many_images": "invalid_request",
+    "unsupported_image_mime": "invalid_request",
+    "input_too_large": "invalid_request",
+    "cancelled": "invalid_request",
+}
+
+
+def public_error_code(error: ImageGenerationError) -> str:
+    """Map internal/stable codes to the public MCP v1 error vocabulary."""
+    return _PUBLIC_ERROR_CODE_ALIASES.get(error.code, error.code)

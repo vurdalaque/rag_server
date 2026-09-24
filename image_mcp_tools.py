@@ -11,8 +11,19 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent
 
 from image_generation import GenerateImageRequest, ImageGenerationBackend
-from image_generation_errors import ImageGenerationError, InvalidReferenceImageError
-from image_reference import decode_and_validate_reference_image
+from image_generation_errors import (
+    ImageGenerationError,
+    InvalidMaskImageError,
+    InvalidReferenceImageError,
+    InvalidRequestError,
+    InvalidSketchImageError,
+    public_error_code,
+)
+from image_reference import (
+    decode_and_validate_mask_image,
+    decode_and_validate_reference_image,
+    decode_and_validate_sketch_image,
+)
 from image_mcp_schemas import (
     GenerateImageStructuredOutput,
     ImageGenerationCapabilitiesOutput,
@@ -61,6 +72,40 @@ def list_mcp_tool_names(
     return names
 
 
+def _coerce_image_base64_payload(value: Any, *, field: str) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        data = value.get("data")
+        if isinstance(data, str) and data.strip():
+            return data
+    raise InvalidRequestError(
+        f"{field} must be a base64-encoded image",
+        field=field,
+    )
+
+
+def _error_tool_result(error: ImageGenerationError) -> CallToolResult:
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": {
+                            "code": public_error_code(error),
+                            "message": error.message,
+                            "details": error.details or None,
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ],
+        is_error=True,
+    )
+
+
 def list_ping_tool_names() -> list[str]:
     """Tool names advertised by ping (excludes ping itself)."""
     return [name for name in list_mcp_tool_names() if name != "ping"]
@@ -91,12 +136,14 @@ def register_image_tools(
         scheduler: str | None = None,
         image_count: int = 1,
         reference_images: list[str] | None = None,
+        mask: str | None = None,
+        sketch: str | None = None,
     ) -> Annotated[CallToolResult, GenerateImageStructuredOutput]:
         """
-        Generate one or more images from a text prompt (and optional reference images).
+        Generate one or more images from a text prompt and optional visual inputs.
 
         Returns MCP image content blocks; metadata is in structured output (seed, timings).
-        Reference images must be base64-encoded blobs.
+        Reference images, mask, and sketch are base64-encoded PNG payloads (or MCP ImageContent).
         """
         if _backend is None:
             logger.warning("generate_image rejected: image backend not registered")
@@ -123,42 +170,46 @@ def register_image_tools(
 
         ref_count = len(reference_images or [])
         logger.info(
-            "MCP generate_image start prompt_chars=%s reference_images=%s image_count=%s",
+            "MCP generate_image start prompt_chars=%s reference_images=%s "
+            "has_mask=%s has_sketch=%s image_count=%s",
             len(prompt),
             ref_count,
+            mask is not None,
+            sketch is not None,
             image_count,
         )
 
         decoded_refs: list[bytes] = []
+        decoded_mask: bytes | None = None
+        decoded_sketch: bytes | None = None
 
-        if reference_images:
-            for index, encoded in enumerate(reference_images):
-                try:
+        try:
+            if reference_images:
+                for index, encoded in enumerate(reference_images):
+                    payload = _coerce_image_base64_payload(
+                        encoded,
+                        field="reference_images",
+                    )
                     decoded_refs.append(
-                        decode_and_validate_reference_image(encoded, index=index),
+                        decode_and_validate_reference_image(payload, index=index),
                     )
-                except InvalidReferenceImageError as error:
-                    return CallToolResult(
-                        content=[
-                            TextContent(
-                                type="text",
-                                text=json.dumps(
-                                    {
-                                        "error": {
-                                            "code": error.code,
-                                            "message": error.message,
-                                            "details": {
-                                                "index": index,
-                                                **(error.details or {}),
-                                            },
-                                        }
-                                    },
-                                    ensure_ascii=False,
-                                ),
-                            )
-                        ],
-                        is_error=True,
-                    )
+
+            if mask is not None:
+                decoded_mask = decode_and_validate_mask_image(
+                    _coerce_image_base64_payload(mask, field="mask"),
+                )
+
+            if sketch is not None:
+                decoded_sketch = decode_and_validate_sketch_image(
+                    _coerce_image_base64_payload(sketch, field="sketch"),
+                )
+        except (
+            InvalidReferenceImageError,
+            InvalidMaskImageError,
+            InvalidSketchImageError,
+            InvalidRequestError,
+        ) as error:
+            return _error_tool_result(error)
 
         request = GenerateImageRequest(
             prompt=prompt,
@@ -172,6 +223,8 @@ def register_image_tools(
             scheduler=scheduler,
             image_count=image_count,
             reference_images=tuple(decoded_refs),
+            mask=decoded_mask,
+            sketch=decoded_sketch,
         )
 
         try:
@@ -179,28 +232,11 @@ def register_image_tools(
         except ImageGenerationError as error:
             logger.warning(
                 "MCP generate_image failed code=%s message=%s details=%s",
-                error.code,
+                public_error_code(error),
                 error.message,
                 error.details or {},
             )
-            return CallToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "error": {
-                                    "code": error.code,
-                                    "message": error.message,
-                                    "details": error.details or None,
-                                }
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                ],
-                is_error=True,
-            )
+            return _error_tool_result(error)
 
         content: list[ImageContent] = []
 

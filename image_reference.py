@@ -1,4 +1,4 @@
-"""Decode and validate MCP reference image payloads."""
+"""Decode and validate MCP image payloads (references, sketch, mask)."""
 
 from __future__ import annotations
 
@@ -6,15 +6,38 @@ import base64
 import hashlib
 import re
 from io import BytesIO
+from typing import Literal, Type
 
-from image_generation_errors import InvalidReferenceImageError
+from image_generation_errors import (
+    ImageGenerationError,
+    InvalidMaskImageError,
+    InvalidReferenceImageError,
+    InvalidSketchImageError,
+)
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _DATA_URL_RE = re.compile(r"^data:[^;]+;base64,(.+)$", re.DOTALL | re.IGNORECASE)
 
+ImageInputRole = Literal["reference", "mask", "sketch"]
+
+_ROLE_ERROR_CLASS: dict[ImageInputRole, Type[ImageGenerationError]] = {
+    "reference": InvalidReferenceImageError,
+    "mask": InvalidMaskImageError,
+    "sketch": InvalidSketchImageError,
+}
+
+
+def _role_error(
+    role: ImageInputRole,
+    message: str,
+    **details: object,
+) -> ImageGenerationError:
+    error_class = _ROLE_ERROR_CLASS[role]
+    return error_class(message, **details)
+
 
 def normalize_reference_base64(encoded: str) -> str:
-    """Strip data-URL prefix and whitespace from a base64 reference payload."""
+    """Strip data-URL prefix and whitespace from a base64 image payload."""
     text = encoded.strip()
     if not text:
         raise InvalidReferenceImageError(
@@ -24,77 +47,116 @@ def normalize_reference_base64(encoded: str) -> str:
     match = _DATA_URL_RE.match(text)
     if match:
         text = match.group(1)
-    # MCP clients sometimes wrap base64 across lines.
     return "".join(text.split())
 
 
-def decode_reference_image_base64(encoded: str, *, index: int) -> bytes:
-    """Decode one reference_images[] entry to raw bytes."""
+def normalize_image_base64(encoded: str, *, role: ImageInputRole) -> str:
+    text = encoded.strip()
+    if not text:
+        raise _role_error(role, f"{role} image payload is empty")
+    match = _DATA_URL_RE.match(text)
+    if match:
+        text = match.group(1)
+    return "".join(text.split())
+
+
+def decode_image_base64(
+    encoded: str,
+    *,
+    role: ImageInputRole,
+    index: int | None = None,
+) -> bytes:
     try:
-        normalized = normalize_reference_base64(encoded)
+        normalized = normalize_image_base64(encoded, role=role)
         data = base64.b64decode(normalized, validate=True)
-    except InvalidReferenceImageError:
+    except ImageGenerationError:
         raise
     except Exception as error:
-        raise InvalidReferenceImageError(
-            "reference image is not valid base64",
-            index=index,
-            reason=str(error),
+        details: dict[str, object] = {"reason": str(error)}
+        if index is not None:
+            details["index"] = index
+        raise _role_error(
+            role,
+            f"{role} image is not valid base64",
+            **details,
         ) from error
 
     if not data:
-        raise InvalidReferenceImageError(
-            "reference image decoded to empty bytes",
-            index=index,
-        )
+        details = {}
+        if index is not None:
+            details["index"] = index
+        raise _role_error(role, f"{role} image decoded to empty bytes", **details)
     return data
 
 
-def validate_reference_image_bytes(data: bytes, *, index: int) -> None:
-    """Fully decode the image (not just the file header)."""
+def decode_reference_image_base64(encoded: str, *, index: int) -> bytes:
+    return decode_image_base64(encoded, role="reference", index=index)
+
+
+def validate_image_bytes(
+    data: bytes,
+    *,
+    role: ImageInputRole,
+    index: int | None = None,
+) -> None:
     if len(data) < len(PNG_SIGNATURE) or not data.startswith(PNG_SIGNATURE):
-        raise InvalidReferenceImageError(
-            "reference image must be a PNG (missing PNG signature)",
-            index=index,
-            size_bytes=len(data),
+        details: dict[str, object] = {"size_bytes": len(data)}
+        if index is not None:
+            details["index"] = index
+        raise _role_error(
+            role,
+            f"{role} image must be a PNG (missing PNG signature)",
+            **details,
         )
 
     try:
         from PIL import Image
     except ImportError as error:
-        raise InvalidReferenceImageError(
-            "server cannot validate reference images (Pillow not installed)",
-            index=index,
+        details = {}
+        if index is not None:
+            details["index"] = index
+        raise _role_error(
+            role,
+            f"server cannot validate {role} images (Pillow not installed)",
+            **details,
         ) from error
 
     try:
         with Image.open(BytesIO(data)) as image:
             image.load()
             width, height = image.size
-            mode = image.mode
     except OSError as error:
-        raise InvalidReferenceImageError(
-            "reference image is corrupt or truncated",
-            index=index,
-            reason=str(error),
-            size_bytes=len(data),
-            sha256_prefix=reference_sha256_prefix(data),
+        details = {
+            "reason": str(error),
+            "size_bytes": len(data),
+            "sha256_prefix": reference_sha256_prefix(data),
+        }
+        if index is not None:
+            details["index"] = index
+        raise _role_error(
+            role,
+            f"{role} image is corrupt or truncated",
+            **details,
         ) from error
     except Exception as error:
-        raise InvalidReferenceImageError(
-            "reference image could not be decoded",
-            index=index,
-            reason=str(error),
-            size_bytes=len(data),
+        details = {"reason": str(error), "size_bytes": len(data)}
+        if index is not None:
+            details["index"] = index
+        raise _role_error(
+            role,
+            f"{role} image could not be decoded",
+            **details,
         ) from error
 
     if width < 1 or height < 1:
-        raise InvalidReferenceImageError(
-            "reference image has invalid dimensions",
-            index=index,
-            width=width,
-            height=height,
-        )
+        details = {"width": width, "height": height}
+        if index is not None:
+            details["index"] = index
+        raise _role_error(role, f"{role} image has invalid dimensions", **details)
+
+
+def validate_reference_image_bytes(data: bytes, *, index: int) -> None:
+    validate_image_bytes(data, role="reference", index=index)
 
 
 def reference_sha256(data: bytes) -> str:
@@ -105,13 +167,13 @@ def reference_sha256_prefix(data: bytes, hex_chars: int = 16) -> str:
     return reference_sha256(data)[:hex_chars]
 
 
-def canonicalize_reference_png_for_comfy(data: bytes, *, index: int) -> bytes:
-    """Re-encode to a fresh PNG so ComfyUI LoadImage reads a plain raster file.
-
-    ComfyUI may route marginal/corrupt files through PyAV (VideoFromFile), which
-    fails on static PNG with avcodec_receive_frame errors.
-    """
-    validate_reference_image_bytes(data, index=index)
+def canonicalize_png_for_comfy(
+    data: bytes,
+    *,
+    role: ImageInputRole,
+    index: int | None = None,
+) -> bytes:
+    validate_image_bytes(data, role=role, index=index)
 
     from PIL import Image
 
@@ -130,10 +192,24 @@ def canonicalize_reference_png_for_comfy(data: bytes, *, index: int) -> bytes:
         converted.save(buffer, format="PNG", compress_level=6)
         out = buffer.getvalue()
 
-    validate_reference_image_bytes(out, index=index)
+    validate_image_bytes(out, role=role, index=index)
     return out
+
+
+def canonicalize_reference_png_for_comfy(data: bytes, *, index: int) -> bytes:
+    return canonicalize_png_for_comfy(data, role="reference", index=index)
 
 
 def decode_and_validate_reference_image(encoded: str, *, index: int) -> bytes:
     data = decode_reference_image_base64(encoded, index=index)
     return canonicalize_reference_png_for_comfy(data, index=index)
+
+
+def decode_and_validate_mask_image(encoded: str) -> bytes:
+    data = decode_image_base64(encoded, role="mask")
+    return canonicalize_png_for_comfy(data, role="mask")
+
+
+def decode_and_validate_sketch_image(encoded: str) -> bytes:
+    data = decode_image_base64(encoded, role="sketch")
+    return canonicalize_png_for_comfy(data, role="sketch")

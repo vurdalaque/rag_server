@@ -7,7 +7,7 @@ import json
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from image_generation_config import ImageGenerationConfig, load_image_generation_config
 from image_generation_errors import (
@@ -21,7 +21,27 @@ TEXT_ENCODE_NODE_ID = "4"
 KSAMPLER_NODE_ID = "5"
 SAVE_IMAGE_NODE_ID = "7"
 
+_SKETCH_PROMPT_GUIDANCE = (
+    "The attached sketch image provides composition, layout, and rough shape or "
+    "color guidance. Treat it as spatial guidance; do not necessarily copy its "
+    "visual style."
+)
+_MASK_PROMPT_GUIDANCE = (
+    "The attached mask image marks the soft region where the requested edit should "
+    "occur. This is generative region guidance only; pixels outside the mask are "
+    "not guaranteed to remain identical."
+)
+
 _TEMPLATE_CACHE: dict[Path, dict[str, Any]] = {}
+
+
+WorkflowImageRole = Literal["reference", "sketch", "mask"]
+
+
+@dataclass(frozen=True)
+class WorkflowImageInput:
+    filename: str
+    role: WorkflowImageRole = "reference"
 
 
 @dataclass(frozen=True)
@@ -32,6 +52,8 @@ class WorkflowBuildParams:
     prompt: str
     negative_prompt: str = ""
     resolution: int | None = None
+    width: int | None = None
+    height: int | None = None
     seed: int | None = None
     steps: int | None = None
     cfg: float | None = None
@@ -39,16 +61,77 @@ class WorkflowBuildParams:
     scheduler: str | None = None
     denoise: float | None = None
     input_image_names: tuple[str, ...] = ()
+    image_inputs: tuple[WorkflowImageInput, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.request_id or "/" in self.request_id or "\\" in self.request_id:
             raise InvalidRequestError("request_id must be a non-empty safe identifier")
-        if len(self.input_image_names) > 10:
+        slot_count = len(self.image_inputs) or len(self.input_image_names)
+        if slot_count > 12:
             raise TooManyImagesError(
-                "At most 10 input images are supported",
-                count=len(self.input_image_names),
-                max_images=10,
+                "At most 12 input images are supported",
+                count=slot_count,
+                max_images=12,
             )
+
+
+def resolved_workflow_image_inputs(
+    params: WorkflowBuildParams,
+) -> tuple[WorkflowImageInput, ...]:
+    if params.image_inputs:
+        return params.image_inputs
+    return tuple(
+        WorkflowImageInput(name, "reference") for name in params.input_image_names
+    )
+
+
+def resolve_square_resolution(
+    config: ImageGenerationConfig,
+    *,
+    width: int | None,
+    height: int | None,
+    resolution: int | None = None,
+) -> int:
+    """Resolve square workflow resolution from optional width/height."""
+    if resolution is not None:
+        res = resolution
+    elif width is not None and height is not None:
+        if width != height:
+            raise UnsupportedParameterError(
+                "width and height must be equal for the current backend",
+                width=width,
+                height=height,
+                constraint="width_must_equal_height",
+            )
+        res = width
+    elif width is not None:
+        res = width
+    elif height is not None:
+        res = height
+    else:
+        res = config.default_resolution
+
+    if res < config.min_resolution or res > config.max_resolution:
+        raise UnsupportedParameterError(
+            "resolution out of allowed range",
+            resolution=res,
+            min_resolution=config.min_resolution,
+            max_resolution=config.max_resolution,
+        )
+    return res
+
+
+def augment_prompt_for_image_roles(
+    prompt: str,
+    image_inputs: tuple[WorkflowImageInput, ...],
+) -> str:
+    parts = [prompt.strip()]
+    roles = {item.role for item in image_inputs}
+    if "sketch" in roles:
+        parts.append(_SKETCH_PROMPT_GUIDANCE)
+    if "mask" in roles:
+        parts.append(_MASK_PROMPT_GUIDANCE)
+    return "\n\n".join(part for part in parts if part)
 
 
 @dataclass(frozen=True)
@@ -103,7 +186,10 @@ def validate_generation_params(
             max_images=config.max_input_images,
         )
 
-    res = resolution if resolution is not None else config.default_resolution
+    if resolution is not None:
+        res = resolution
+    else:
+        res = config.default_resolution
     if res < config.min_resolution or res > config.max_resolution:
         raise UnsupportedParameterError(
             "resolution out of allowed range",
@@ -230,12 +316,12 @@ def build_workflow(
 ) -> dict[str, Any]:
     """Facade used by ``image_generation.ComfyUIBackend``."""
     cfg = config or load_image_generation_config()
-    resolution = request.width or request.height or cfg.default_resolution
     params = WorkflowBuildParams(
         request_id=request_id,
         prompt=request.prompt,
         negative_prompt=request.negative_prompt or "",
-        resolution=resolution,
+        width=request.width,
+        height=request.height,
         seed=request.seed,
         steps=request.steps,
         cfg=request.cfg,
@@ -255,15 +341,22 @@ def build_image_workflow(
     allowed_schedulers: frozenset[str] | None = None,
 ) -> WorkflowBuildResult:
     """Deep-copy the template and apply generation parameters for one request."""
+    image_inputs = resolved_workflow_image_inputs(params)
+    square_resolution = resolve_square_resolution(
+        config,
+        width=params.width,
+        height=params.height,
+        resolution=params.resolution,
+    )
     validate_generation_params(
         config,
-        resolution=params.resolution,
+        resolution=square_resolution,
         steps=params.steps,
         cfg=params.cfg,
         sampler_name=params.sampler_name,
         scheduler=params.scheduler,
         denoise=params.denoise,
-        input_image_count=len(params.input_image_names),
+        input_image_count=len(image_inputs),
         allowed_samplers=allowed_samplers,
         allowed_schedulers=allowed_schedulers,
     )
@@ -280,13 +373,12 @@ def build_image_workflow(
 
     text_encode = workflow[TEXT_ENCODE_NODE_ID]
     _strip_reference_image_inputs(text_encode)
-    text_encode["inputs"]["prompt"] = params.prompt
-    text_encode["inputs"]["negative_prompt"] = params.negative_prompt
-    text_encode["inputs"]["resolution"] = (
-        params.resolution
-        if params.resolution is not None
-        else config.default_resolution
+    text_encode["inputs"]["prompt"] = augment_prompt_for_image_roles(
+        params.prompt,
+        image_inputs,
     )
+    text_encode["inputs"]["negative_prompt"] = params.negative_prompt
+    text_encode["inputs"]["resolution"] = square_resolution
 
     ksampler = workflow[KSAMPLER_NODE_ID]
     ksampler["inputs"]["seed"] = seed_used
@@ -313,16 +405,13 @@ def build_image_workflow(
     save_image = workflow[SAVE_IMAGE_NODE_ID]
     save_image["inputs"]["filename_prefix"] = f"mcp/{params.request_id}/result"
 
-    if params.input_image_names:
-        load_ids = _next_node_ids(workflow, len(params.input_image_names))
-        for index, (node_id, image_name) in enumerate(
-            zip(load_ids, params.input_image_names),
-            start=1,
-        ):
+    if image_inputs:
+        load_ids = _next_node_ids(workflow, len(image_inputs))
+        for index, (node_id, slot) in enumerate(zip(load_ids, image_inputs), start=1):
             workflow[node_id] = {
-                "inputs": {"image": image_name},
+                "inputs": {"image": slot.filename},
                 "class_type": "LoadImage",
-                "_meta": {"title": "LoadImage"},
+                "_meta": {"title": f"LoadImage ({slot.role})"},
             }
             text_encode["inputs"][f"images.image_{index}"] = [node_id, 0]
 
