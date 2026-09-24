@@ -375,14 +375,12 @@ Read-only multimodal анализ: описание, сравнение before/a
 
 ### `upscale_image` (conditional)
 
-Super-resolution / upscale (не обычный resize в Realm). Либо `scale`, либо `target_width` + `target_height` (не оба).
+Super-resolution / upscale (не обычный resize в Realm). MVP: `scale=4` (RealESRGAN через ComfyUI).
 
 | Параметр | Тип | Описание |
 |----------|-----|----------|
 | `image` | `string` | Исходное изображение |
-| `scale` | `number?` | Коэффициент (из capabilities) |
-| `target_width` | `integer?` | Целевая ширина |
-| `target_height` | `integer?` | Целевая высота |
+| `scale` | `number?` | Коэффициент (MVP: 4) |
 
 ---
 

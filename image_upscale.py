@@ -1,21 +1,17 @@
-"""Image upscale backend facade (ComfyUI or optional HTTP service)."""
+"""Image upscale backend facade (ComfyUI Real-ESRGAN)."""
 
 from __future__ import annotations
 
-import base64
 import logging
 import mimetypes
 import time
 import uuid
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Literal, Protocol, runtime_checkable
-
-import httpx
+from typing import Any, Protocol, runtime_checkable
 
 from comfy_client import ComfyUIClient
 from image_generation_errors import (
-    BackendUnavailableError,
     ComfyUIUnavailableError,
     ImageGenerationError,
     InputTooLargeError,
@@ -39,15 +35,10 @@ _SR_NODE_CLASSES = frozenset(
     {"UpscaleModelLoader", "ImageUpscaleWithModel", "LoadImage", "SaveImage"},
 )
 
-ScaleMode = Literal["factor", "target"]
-
-
 @dataclass(frozen=True)
 class UpscaleRequest:
     image: bytes
     scale: float | None = None
-    target_width: int | None = None
-    target_height: int | None = None
 
 
 @dataclass(frozen=True)
@@ -60,10 +51,7 @@ class UpscaleResult:
 
 @dataclass(frozen=True)
 class _ResolvedUpscale:
-    mode: ScaleMode
-    scale: float | None
-    target_width: int | None
-    target_height: int | None
+    scale: float
     source_width: int
     source_height: int
 
@@ -143,14 +131,6 @@ def _resolve_upscale_params(
     request: UpscaleRequest,
     config: ImageUpscaleConfig,
 ) -> _ResolvedUpscale:
-    has_scale = request.scale is not None
-    has_target = request.target_width is not None or request.target_height is not None
-
-    if has_target:
-        raise UnsupportedParameterError(
-            "target_width and target_height are not supported in this server version",
-        )
-
     source_width, source_height = _decode_image_dimensions(request.image)
 
     if len(request.image) > config.max_input_bytes:
@@ -168,67 +148,19 @@ def _resolve_upscale_params(
             height=source_height,
         )
 
-    if not has_scale and not has_target:
-        scale = config.default_scale
-        return _ResolvedUpscale(
-            mode="factor",
-            scale=scale,
-            target_width=None,
-            target_height=None,
-            source_width=source_width,
-            source_height=source_height,
-        )
-
-    if has_scale:
-        scale = float(request.scale)  # type: ignore[arg-type]
-        if scale < config.min_scale or scale > config.max_scale:
-            raise UnsupportedParameterError(
-                "scale is outside supported range",
-                scale=scale,
-                min_scale=config.min_scale,
-                max_scale=config.max_scale,
-            )
-        out_w = max(1, int(round(source_width * scale)))
-        out_h = max(1, int(round(source_height * scale)))
-        _assert_output_dimensions(out_w, out_h, config)
-        return _ResolvedUpscale(
-            mode="factor",
-            scale=scale,
-            target_width=None,
-            target_height=None,
-            source_width=source_width,
-            source_height=source_height,
-        )
-
-    target_width = request.target_width
-    target_height = request.target_height
-    if target_width is not None and target_width < 1:
-        raise InvalidRequestError("target_width must be positive")
-    if target_height is not None and target_height < 1:
-        raise InvalidRequestError("target_height must be positive")
-    if target_width is None and target_height is None:
-        raise InvalidRequestError("target_width or target_height is required")
-
-    if target_width is None:
-        target_width = max(1, int(round(source_width * (target_height / source_height))))
-    elif target_height is None:
-        target_height = max(1, int(round(source_height * (target_width / source_width))))
-
-    _assert_output_dimensions(target_width, target_height, config)
-    if target_width <= source_width and target_height <= source_height:
+    scale = float(request.scale if request.scale is not None else config.default_scale)
+    if scale < config.min_scale or scale > config.max_scale:
         raise UnsupportedParameterError(
-            "target dimensions must increase resolution relative to the source image",
-            source_width=source_width,
-            source_height=source_height,
-            target_width=target_width,
-            target_height=target_height,
+            "scale is outside supported range",
+            scale=scale,
+            min_scale=config.min_scale,
+            max_scale=config.max_scale,
         )
-
+    out_w = max(1, int(round(source_width * scale)))
+    out_h = max(1, int(round(source_height * scale)))
+    _assert_output_dimensions(out_w, out_h, config)
     return _ResolvedUpscale(
-        mode="target",
-        scale=None,
-        target_width=target_width,
-        target_height=target_height,
+        scale=scale,
         source_width=source_width,
         source_height=source_height,
     )
@@ -267,19 +199,7 @@ def _comfy_sr_supported(object_info: dict[str, Any], config: ImageUpscaleConfig)
     models = _list_upscale_models(object_info)
     if not models:
         return False
-    needed = {config.comfy_upscale_model, config.comfy_upscale_model_x2}
-    return bool(needed & set(models))
-
-
-def _effective_scale(resolved: _ResolvedUpscale) -> float:
-    if resolved.mode == "factor" and resolved.scale is not None:
-        return float(resolved.scale)
-    if resolved.target_width is None or resolved.target_height is None:
-        raise UpscaleFailedError("missing target dimensions for upscale")
-    return max(
-        resolved.target_width / resolved.source_width,
-        resolved.target_height / resolved.source_height,
-    )
+    return config.comfy_upscale_model in models
 
 
 def _pick_sr_model_name(
@@ -287,19 +207,14 @@ def _pick_sr_model_name(
     config: ImageUpscaleConfig,
     available_models: list[str],
 ) -> tuple[str, float]:
-    scale = _effective_scale(resolved)
     tolerance = 0.06
     for supported in config.supported_sr_scales:
-        if abs(scale - supported) <= tolerance:
-            if supported <= 2.0 + tolerance:
-                name = config.comfy_upscale_model_x2
-            else:
-                name = config.comfy_upscale_model
-            if name in available_models:
-                return name, supported
+        if abs(resolved.scale - supported) <= tolerance:
+            if config.comfy_upscale_model in available_models:
+                return config.comfy_upscale_model, supported
     raise UnsupportedParameterError(
         "requested upscale factor is not supported by configured SR models",
-        scale=scale,
+        scale=resolved.scale,
         supported_scales=list(config.supported_sr_scales),
     )
 
@@ -346,7 +261,7 @@ def build_comfy_upscale_workflow(
 
 
 class ComfyUpscaleBackend:
-    """Upscale via a minimal ComfyUI LoadImage -> scale -> SaveImage workflow."""
+    """Upscale via ComfyUI Real-ESRGAN (LoadImage -> ImageUpscaleWithModel -> SaveImage)."""
 
     def __init__(
         self,
@@ -371,8 +286,6 @@ class ComfyUpscaleBackend:
 
     async def probe(self) -> bool:
         if not self._config.enabled:
-            return False
-        if self._config.uses_http_backend and not self._config.comfy_base_url:
             return False
 
         try:

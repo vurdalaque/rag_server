@@ -9,8 +9,6 @@ from pathlib import Path
 from image_generation_config import ImageGenerationConfig
 from rag_metrics import env_bool
 
-_MODULE_DIR = Path(__file__).resolve().parent
-
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -33,7 +31,6 @@ class ImageUpscaleConfig:
     enabled: bool
     comfy_base_url: str
     comfyui_output_root: Path
-    http_upscale_url: str | None
 
     probe_timeout: float
     upscale_timeout: float
@@ -52,12 +49,7 @@ class ImageUpscaleConfig:
     allowed_input_mime_types: frozenset[str]
 
     comfy_upscale_model: str
-    comfy_upscale_model_x2: str
     supported_sr_scales: tuple[float, ...]
-
-    @property
-    def uses_http_backend(self) -> bool:
-        return bool(self.http_upscale_url)
 
 
 def load_image_upscale_config() -> ImageUpscaleConfig:
@@ -67,8 +59,6 @@ def load_image_upscale_config() -> ImageUpscaleConfig:
         or "http://127.0.0.1:8188"
     ).rstrip("/")
     output_root = os.getenv("COMFYUI_OUTPUT_ROOT", "")
-    http_url_raw = os.getenv("IMAGE_UPSCALE_URL", "").strip()
-    http_url = http_url_raw.rstrip("/") if http_url_raw else None
 
     mime_raw = os.getenv(
         "IMAGE_UPSCALE_ALLOWED_INPUT_MIME_TYPES",
@@ -92,7 +82,6 @@ def load_image_upscale_config() -> ImageUpscaleConfig:
         enabled=env_bool("IMAGE_UPSCALE_ENABLED", False),
         comfy_base_url=comfy_url,
         comfyui_output_root=Path(output_root) if output_root else Path("."),
-        http_upscale_url=http_url,
         probe_timeout=_env_float(
             "IMAGE_UPSCALE_PROBE_TIMEOUT",
             _env_float(
@@ -146,11 +135,6 @@ def load_image_upscale_config() -> ImageUpscaleConfig:
             "RealESRGAN_x4plus.pth",
         ).strip()
         or "RealESRGAN_x4plus.pth",
-        comfy_upscale_model_x2=os.getenv(
-            "IMAGE_UPSCALE_COMFY_MODEL_X2",
-            "RealESRGAN_x2plus.pth",
-        ).strip()
-        or "RealESRGAN_x2plus.pth",
         supported_sr_scales=(4.0,),
     )
 

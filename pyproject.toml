@@ -44,7 +44,6 @@ py-modules = [
     "image_concurrency",
     "image_segmentation",
     "image_segmentation_config",
-    "image_segmentation_local",
     "image_segmentation_types",
     "image_timings",
     "image_mcp_schemas",

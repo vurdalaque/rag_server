@@ -33,7 +33,6 @@ def _config(**overrides: object) -> ImageUpscaleConfig:
         enabled=True,
         comfy_base_url="http://127.0.0.1:8188",
         comfyui_output_root=__import__("pathlib").Path("."),
-        http_upscale_url=None,
         probe_timeout=5.0,
         upscale_timeout=60.0,
         upload_timeout_seconds=30.0,
@@ -47,20 +46,10 @@ def _config(**overrides: object) -> ImageUpscaleConfig:
         max_output_dimension=2048,
         allowed_input_mime_types=frozenset({"image/png"}),
         comfy_upscale_model="RealESRGAN_x4plus.pth",
-        comfy_upscale_model_x2="RealESRGAN_x2plus.pth",
         supported_sr_scales=(4.0,),
     )
     base.update(overrides)
     return ImageUpscaleConfig(**base)
-
-
-def test_target_dimensions_not_supported() -> None:
-    data = _png(64, 64)
-    with pytest.raises(UnsupportedParameterError):
-        _resolve_upscale_params(
-            UpscaleRequest(image=data, target_width=128),
-            _config(),
-        )
 
 
 def test_default_scale_is_four() -> None:
