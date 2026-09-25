@@ -1215,13 +1215,7 @@ def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
 
 
 def _mcp_json_response() -> bool:
-    """JSON-RPC body on POST (default). ``MCP_JSON_RESPONSE=false`` switches POST to SSE.
-
-    JSON is the long-standing contract for the Realm bot and for bare ``tools/call``
-    POSTs without ``initialize``: one request, one ``application/json`` body. SSE mode
-    sends headers immediately and pings every 15s, but clients that do not parse
-    ``text/event-stream`` on POST break on it.
-    """
+    """JSON-RPC body on POST (default). ``MCP_JSON_RESPONSE=false`` switches POST to SSE."""
     return os.getenv("MCP_JSON_RESPONSE", "true").strip().lower() in {
         "1",
         "true",
@@ -1229,16 +1223,22 @@ def _mcp_json_response() -> bool:
     }
 
 
-# Streamable HTTP без сессий: свой транспорт на каждый HTTP-запрос, без
-# Mcp-Session-Id, поэтому голый POST tools/call не требует initialize.
-# В JSON-режиме до конца работы инструмента в сеть не уходит ничего, включая
-# заголовки, поэтому прокси перед :8000 нужен proxy_read_timeout >=
-# IMAGE_GENERATION_TIMEOUT.
+def _mcp_stateless_http() -> bool:
+    """Keep initialized client sessions by default for long-running tools."""
+    return os.getenv("MCP_STATELESS_HTTP", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+# Stateful Streamable HTTP keeps the initialized transport alive while a long
+# tool is running. Stateless mode remains available for connector-style clients.
 mcp_app = wrap_mcp_modern_headers(
     mcp.streamable_http_app(
         streamable_http_path="/",
         json_response=_mcp_json_response(),
-        stateless_http=True,
+        stateless_http=_mcp_stateless_http(),
         transport_security=MCP_TRANSPORT_SECURITY,
     )
 )

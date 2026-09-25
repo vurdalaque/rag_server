@@ -1,9 +1,8 @@
-"""Worker: production defaults (stateless Streamable HTTP + JSON on POST) over a real socket.
+"""Worker: initialized MCP client waits for a long tool over a real socket.
 
-Reproduces the bare ``tools/call`` POST the Realm bot and ``tests/mcp_smoke.sh``
-use: no ``initialize``, no ``Mcp-Session-Id``, ``MCP-Protocol-Version: 2024-11-05``.
-A real socket is required: ``ASGITransport`` buffers until the response completes
-and ignores timeouts, so it cannot observe an early drop.
+This follows the radius-bot path: ``streamable_http_client`` plus ``ClientSession``,
+``initialize()``, then a long ``tools/call`` on the same stateful transport.
+A real socket is required to observe an early transport close.
 """
 
 from __future__ import annotations
@@ -24,8 +23,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import httpx2
 import pytest
 import uvicorn
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 import rag_server
 from comfy_progress import notify_wait_progress
@@ -33,14 +35,6 @@ from image_generation import GeneratedImage, ImageGenerationResult
 
 SLOW_SECONDS = 6.0
 PROGRESS_TICK_SECONDS = 2.0
-
-CALL_BODY = {
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {"name": "generate_image", "arguments": {"prompt": "red cube"}},
-}
-
 
 def _free_port() -> int:
     with socket.socket() as probe:
@@ -99,7 +93,7 @@ def tmp_rag_paths(tmp_path: pytest.TempPath) -> None:
     rag_server.rag_service.clear()
 
 
-def test_mcp_bare_post_waits_for_slow_backend(tmp_rag_paths: None) -> None:
+def test_mcp_initialized_client_waits_for_slow_backend(tmp_rag_paths: None) -> None:
     slow = _slow_mock_backend(SLOW_SECONDS)
 
     async def _create_backend() -> MagicMock:
@@ -133,36 +127,31 @@ def test_mcp_bare_post_waits_for_slow_backend(tmp_rag_paths: None) -> None:
         server = uvicorn.Server(config)
         server_task = asyncio.create_task(server.serve())
         try:
-            timeout = httpx.Timeout(30.0, read=SLOW_SECONDS + 60.0)
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                await _wait_until_healthy(client)
+            health_timeout = httpx.Timeout(30.0, read=SLOW_SECONDS + 60.0)
+            async with httpx.AsyncClient(timeout=health_timeout) as health_client:
+                await _wait_until_healthy(health_client)
 
-                started = time.monotonic()
-                response = await client.post(
+            mcp_timeout = httpx2.Timeout(30.0, read=SLOW_SECONDS + 60.0)
+            async with httpx2.AsyncClient(timeout=mcp_timeout) as mcp_client:
+                async with streamable_http_client(
                     f"http://127.0.0.1:{port}/mcp/",
-                    json=CALL_BODY,
-                    headers={
-                        "Accept": "application/json, text/event-stream",
-                        "Content-Type": "application/json",
-                        "MCP-Protocol-Version": "2024-11-05",
-                    },
-                )
-                elapsed = time.monotonic() - started
+                    http_client=mcp_client,
+                ) as transport:
+                    async with ClientSession(transport[0], transport[1]) as session:
+                        await session.initialize()
+                        started = time.monotonic()
+                        result = await session.call_tool(
+                            "generate_image",
+                            {"prompt": "red cube"},
+                        )
+                        elapsed = time.monotonic() - started
         finally:
             server.should_exit = True
             await server_task
 
-        assert response.status_code == 200, response.text
-        # Stateless Streamable HTTP: никаких сессий и никакого initialize.
-        assert "mcp-session-id" not in response.headers
-        content_type = response.headers.get("content-type", "")
-        assert content_type.startswith("application/json"), content_type
-        # Соединение дожило до конца долгого вызова, а не оборвалось на первом тике.
+        # Сессия и HTTP-соединение дожили до конца долгого вызова.
         assert elapsed >= SLOW_SECONDS, elapsed
-
-        payload = response.json()
-        assert "error" not in payload, payload
-        content = payload["result"]["content"]
-        assert [block for block in content if block.get("type") == "image"], content
+        assert result.is_error is not True
+        assert any(getattr(block, "type", None) == "image" for block in result.content)
 
     asyncio.run(_run())

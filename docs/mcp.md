@@ -5,7 +5,7 @@
 - **Имя сервера:** `Project Knowledge Gateway`
 - **Версия:** `1.2.0`
 - **Endpoint:** `POST /mcp/` (mount от корня FastAPI-приложения)
-- **Транспорт:** Streamable HTTP, единственный режим — отдельный transport на каждый HTTP-запрос, без сессий и без `mcp-session-id`. Поэтому голый `POST /mcp/` с `tools/call` работает **без** `initialize` (именно так обращается бот Realm и `tests/mcp_smoke.sh`).
+- **Транспорт:** Streamable HTTP, по умолчанию stateful (`MCP_STATELESS_HTTP=false`): клиент вызывает `initialize` и передаёт полученный `mcp-session-id` в последующих запросах. Это сохраняет транспорт на время долгих `tools/call`. Для connector-style клиентов без сессии доступен `MCP_STATELESS_HTTP=true`.
 - **Формат ответа на POST:** по умолчанию **одно тело `application/json`** (`MCP_JSON_RESPONSE=true`). В этом режиме в сокет до завершения инструмента не уходит ничего, включая заголовки, поэтому любому прокси перед `:8000` нужен `proxy_read_timeout` ≥ `IMAGE_GENERATION_TIMEOUT`.
 - `MCP_JSON_RESPONSE=false` переключает POST на **SSE**: заголовки отдаются сразу, keepalive-пинг раз в 15 с. Годится только для клиентов, которые разбирают `text/event-stream` на POST. Smoke: `tests/mcp_smoke.sh`, регрессия: `test_mcp_long_tool.py`.
 
@@ -564,7 +564,7 @@ curl.exe -sS -m 1200 \
   http://127.0.0.1:8000/mcp/
 ```
 
-Тот же сценарий (голый POST без `initialize`, JSON-ответ, долгий backend) закреплён тестом `test_mcp_long_tool.py`.
+Сценарий production-бота (`streamable_http_client` + `ClientSession.initialize()` + долгий backend) закреплён тестом `test_mcp_long_tool.py`.
 
 Метрики: `rag_mcp_tool_duration_seconds{tool="generate_image"}`, `rag_image_generation_duration_seconds`, `rag_dependency_up{service="comfyui"}` — дашборд *RAG server* в Grafana (`site/victoria-metrics`).
 

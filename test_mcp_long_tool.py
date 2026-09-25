@@ -11,8 +11,9 @@ from pathlib import Path
 def test_mcp_generate_image_waits_for_slow_backend() -> None:
     worker = Path(__file__).with_name("test_mcp_long_tool_worker.py")
     env = os.environ.copy()
-    # Проверяется production-дефолт, поэтому MCP_JSON_RESPONSE не переопределяется.
+    # Проверяются production-дефолты: stateful transport и JSON-ответы.
     env.pop("MCP_JSON_RESPONSE", None)
+    env.pop("MCP_STATELESS_HTTP", None)
     completed = subprocess.run(
         [
             sys.executable,
