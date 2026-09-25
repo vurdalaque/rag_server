@@ -5,7 +5,7 @@
 - **Имя сервера:** `Project Knowledge Gateway`
 - **Версия:** `1.2.0`
 - **Endpoint:** `POST /mcp/` (mount от корня FastAPI-приложения)
-- **Транспорт:** Streamable HTTP, stateless по умолчанию (`MCP_STATELESS_HTTP` не задан или `true`), ответы в JSON (`json_response=true`). Для клиентов с одной долгой сессией и `Mcp-Session-Id`: `MCP_STATELESS_HTTP=false`. Лог `Cleaning up crashed session` — MCP-сессия упала (см. traceback `Session … crashed` выше в логе); часто обрыв клиента или второй запрос на той же stateful-сессии во время `generate_image`.
+- **Транспорт:** Streamable HTTP, **stateful по умолчанию** (`MCP_STATELESS_HTTP` не задан или `false`), ответы в JSON (`json_response=true`). После `initialize` клиент должен передавать заголовок `mcp-session-id` на всех следующих `POST /mcp/`. Режим `MCP_STATELESS_HTTP=true` — отдельный transport на каждый запрос; для долгого `generate_image` он может оборваться с `Connection closed` (-32000), пока Comfy ещё рисует. Smoke: `tests/mcp_smoke.sh`. Лог `Cleaning up crashed session` — MCP-сессия упала (см. traceback `Session … crashed` выше в логе); часто обрыв клиента или второй запрос на той же stateful-сессии во время `generate_image`.
 
 Проверка доступности без MCP-сессии:
 
@@ -540,7 +540,8 @@ curl -s "http://localhost:8000/debug/search?query=SecurOS+Radius&repo=radius-doc
 | Участок | Типичное значение | Где настроить |
 |---------|-------------------|---------------|
 | ComfyUI / WS ожидание | `IMAGE_GENERATION_TIMEOUT` (по умолчанию **600** с) | `.env` на spark |
-| Realm chat → внешний MCP | **600** с read | `www/backend/app/chat_mcp.py` (`MCP_REQUEST_TIMEOUT`) |
+| Realm chat → внешний MCP (клиент `rag-image`) | **600** с read (рекомендуется) | **не** `rag_server/.env` — таймаут в коде/конфиге **бота** (в другом репозитории; в доке ранее: `chat_mcp.py` / `MCP_REQUEST_TIMEOUT`) |
+| `rag_server` Comfy wait | `IMAGE_GENERATION_TIMEOUT` (**600** с по умолчанию) | `rag_server/.env` |
 | ocserv nginx → backend `/mcp/` (diagram) | **300** с | `site/var/nginx.conf` |
 | ocserv nginx → `/api/chat/.../complete` | **900** с | `site/var/nginx.conf` |
 | nginx **без** `proxy_read_timeout` | **60** с (дефолт) | любой новый reverse-proxy перед `:8000` |

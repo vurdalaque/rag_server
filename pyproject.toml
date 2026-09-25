@@ -86,3 +86,6 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "mcp.*"
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "--ignore=test_mcp_long_tool_worker.py"

@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_project","arguments":{"query":"test","top_k":1}}}

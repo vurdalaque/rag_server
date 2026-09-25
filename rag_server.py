@@ -1215,11 +1215,16 @@ def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
 
 
 def _mcp_stateless_http() -> bool:
-    """Stateless avoids shared session crashes when clients pipeline requests during long tools."""
-    return os.getenv("MCP_STATELESS_HTTP", "true").strip().lower() not in {
-        "0",
-        "false",
-        "no",
+    """Stateful (default) keeps one transport for long ``tools/call`` (e.g. generate_image).
+
+    Stateless closes the transport after each HTTP request; with ``json_response=true``
+    that can end in-flight tool handlers with MCP ``Connection closed`` (-32000).
+    Opt in via ``MCP_STATELESS_HTTP=true`` only for clients that never hold long calls.
+    """
+    return os.getenv("MCP_STATELESS_HTTP", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
     }
 
 

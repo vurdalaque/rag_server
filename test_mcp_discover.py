@@ -7,11 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rag_server
-
-MCP_HEADERS = {
-    "Accept": "application/json, text/event-stream",
-    "Content-Type": "application/json",
-}
+from mcp_test_helpers import INITIALIZE_BODY, MCP_HEADERS, mcp_initialize
 
 DISCOVER_BODY = {
     "jsonrpc": "2.0",
@@ -28,18 +24,6 @@ DISCOVER_BODY = {
         },
     },
 }
-
-INITIALIZE_BODY = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2024-11-05",
-        "capabilities": {},
-        "clientInfo": {"name": "test", "version": "1.0"},
-    },
-}
-
 
 @pytest.fixture(scope="module")
 def mcp_client(tmp_path_factory: pytest.TempPathFactory) -> TestClient:
@@ -175,29 +159,13 @@ def test_mcp_discover_matches_initialize_capabilities(
 
 
 def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:
-    init_response = mcp_client.post(
-        "/mcp/",
-        json=INITIALIZE_BODY,
-        headers=MCP_HEADERS,
-    )
-    assert init_response.status_code == 200
-    init_payload = init_response.json()
+    session_headers, init_payload = mcp_initialize(mcp_client)
     assert init_payload["result"]["protocolVersion"] == "2024-11-05"
-
-    mcp_client.post(
-        "/mcp/",
-        json={
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {},
-        },
-        headers=MCP_HEADERS,
-    )
 
     tools_response = mcp_client.post(
         "/mcp/",
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-        headers=MCP_HEADERS,
+        headers=session_headers,
     )
 
     assert tools_response.status_code == 200
