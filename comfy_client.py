@@ -9,7 +9,6 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -592,12 +591,15 @@ class ComfyUIClient:
                     continue
 
                 sleep_task = asyncio.create_task(asyncio.sleep(sleep_for))
-                done, pending = await asyncio.wait(
+                done, _ = await asyncio.wait(
                     {ws_task, sleep_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                for task in pending:
-                    task.cancel()
+                # The WebSocket waiter is persistent across history polling.
+                # Cancel only the one-shot sleep when the WebSocket finishes first.
+                if ws_task in done and not sleep_task.done():
+                    sleep_task.cancel()
+                    await asyncio.gather(sleep_task, return_exceptions=True)
                 for task in done:
                     if task is sleep_task:
                         continue
