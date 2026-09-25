@@ -7,9 +7,8 @@ from pathlib import Path
 
 import pytest
 
-# Stateful MCP (default) is required for long tools/call with json_response=true.
-# Must be set before rag_server is first imported.
-os.environ.setdefault("MCP_STATELESS_HTTP", "false")
+# Совпадает с production-дефолтом: Streamable HTTP без сессий + JSON-тело на POST.
+os.environ.setdefault("MCP_JSON_RESPONSE", "true")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _BASETEMP = _PROJECT_ROOT / ".pytest_tmp"

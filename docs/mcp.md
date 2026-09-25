@@ -5,7 +5,9 @@
 - **Имя сервера:** `Project Knowledge Gateway`
 - **Версия:** `1.2.0`
 - **Endpoint:** `POST /mcp/` (mount от корня FastAPI-приложения)
-- **Транспорт:** Streamable HTTP, **stateful по умолчанию** (`MCP_STATELESS_HTTP` не задан или `false`), ответы в JSON (`json_response=true`). После `initialize` клиент должен передавать заголовок `mcp-session-id` на всех следующих `POST /mcp/`. Режим `MCP_STATELESS_HTTP=true` — отдельный transport на каждый запрос; для долгого `generate_image` он может оборваться с `Connection closed` (-32000), пока Comfy ещё рисует. Smoke: `tests/mcp_smoke.sh`. Лог `Cleaning up crashed session` — MCP-сессия упала (см. traceback `Session … crashed` выше в логе); часто обрыв клиента или второй запрос на той же stateful-сессии во время `generate_image`.
+- **Транспорт:** Streamable HTTP, единственный режим — отдельный transport на каждый HTTP-запрос, без сессий и без `mcp-session-id`. Поэтому голый `POST /mcp/` с `tools/call` работает **без** `initialize` (именно так обращается бот Realm и `tests/mcp_smoke.sh`).
+- **Формат ответа на POST:** по умолчанию **одно тело `application/json`** (`MCP_JSON_RESPONSE=true`). В этом режиме в сокет до завершения инструмента не уходит ничего, включая заголовки, поэтому любому прокси перед `:8000` нужен `proxy_read_timeout` ≥ `IMAGE_GENERATION_TIMEOUT`.
+- `MCP_JSON_RESPONSE=false` переключает POST на **SSE**: заголовки отдаются сразу, keepalive-пинг раз в 15 с. Годится только для клиентов, которые разбирают `text/event-stream` на POST. Smoke: `tests/mcp_smoke.sh`, регрессия: `test_mcp_long_tool.py`.
 
 Проверка доступности без MCP-сессии:
 
@@ -535,14 +537,14 @@ curl -s "http://localhost:8000/debug/search?query=SecurOS+Radius&repo=radius-doc
 
 ## Долгие вызовы tools (`generate_image`, `ask_project`)
 
-`tools/call` держит HTTP-соединение до конца работы на сервере. Таймауты по цепочке (самый короткий выигрывает):
+`tools/call` держит HTTP-соединение до конца работы на сервере. В JSON-режиме (дефолт) сервер **молчит весь вызов** — ни заголовков, ни байта тела, — поэтому обрыв целиком определяется самым коротким таймаутом в цепочке:
 
 | Участок | Типичное значение | Где настроить |
 |---------|-------------------|---------------|
 | ComfyUI / WS ожидание | `IMAGE_GENERATION_TIMEOUT` (по умолчанию **600** с) | `.env` на spark |
 | Realm chat → внешний MCP (клиент `rag-image`) | **600** с read (рекомендуется) | **не** `rag_server/.env` — таймаут в коде/конфиге **бота** (в другом репозитории; в доке ранее: `chat_mcp.py` / `MCP_REQUEST_TIMEOUT`) |
 | `rag_server` Comfy wait | `IMAGE_GENERATION_TIMEOUT` (**600** с по умолчанию) | `rag_server/.env` |
-| ocserv nginx → backend `/mcp/` (diagram) | **300** с | `site/var/nginx.conf` |
+| nginx → backend `/mcp/` | **1200** с | `site/var/nginx.conf` |
 | ocserv nginx → `/api/chat/.../complete` | **900** с | `site/var/nginx.conf` |
 | nginx **без** `proxy_read_timeout` | **60** с (дефолт) | любой новый reverse-proxy перед `:8000` |
 | ChatGPT Connector / часть MCP-клиентов | ~**60** с на один tool call | клиент; сервер не продлевает |
@@ -553,8 +555,16 @@ curl -s "http://localhost:8000/debug/search?query=SecurOS+Radius&repo=radius-doc
 
 ```bash
 # длительность tools/call с сервера (обходит внешний коннектор)
-time curl -sS -m 700 http://127.0.0.1:8000/mcp/ ... tools/call generate_image ...
+curl.exe -sS -m 1200 \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -H "MCP-Protocol-Version: 2024-11-05" \
+  -d "@tests/mcp_generate.json" \
+  -w "\nhttp_code=%{http_code} time_total=%{time_total}s\n" \
+  http://127.0.0.1:8000/mcp/
 ```
+
+Тот же сценарий (голый POST без `initialize`, JSON-ответ, долгий backend) закреплён тестом `test_mcp_long_tool.py`.
 
 Метрики: `rag_mcp_tool_duration_seconds{tool="generate_image"}`, `rag_image_generation_duration_seconds`, `rag_dependency_up{service="comfyui"}` — дашборд *RAG server* в Grafana (`site/victoria-metrics`).
 

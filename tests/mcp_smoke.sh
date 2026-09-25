@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Smoke MCP on a running rag_server (stateful session). Usage:
+# Smoke MCP on a running rag_server (stateless Streamable HTTP, JSON body on POST).
+# Usage:
 #   BASE_URL=http://192.168.10.250:8000 ./tests/mcp_smoke.sh
+#   CURL_MAX=1200 ./tests/mcp_smoke.sh   # real generate_image needs the full timeout
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 MCP_URL="${BASE_URL%/}/mcp/"
-CURL_MAX="${CURL_MAX:-120}"
+CURL_MAX="${CURL_MAX:-1200}"
 
 hdr_accept='Accept: application/json, text/event-stream'
 hdr_json='Content-Type: application/json'
@@ -23,7 +25,7 @@ curl -fsS -D "${init_headers}" -o "${init_out}" \
   "${MCP_URL}"
 session_id="$(grep -i '^mcp-session-id:' "${init_headers}" | head -1 | cut -d' ' -f2 | tr -d '\r')"
 if [[ -z "${session_id}" ]]; then
-  echo "WARN: no mcp-session-id (stateless?). Long generate_image may fail with Connection closed."
+  echo "NOTE: no mcp-session-id (expected for Streamable HTTP); continuing without session header."
   session_hdr=()
 else
   echo "session_id=${session_id}"
@@ -46,7 +48,7 @@ curl -fsS \
 echo
 
 echo "== generate_image (may take up to ${CURL_MAX}s) =="
-curl -fsS -m "${CURL_MAX}" \
+curl -fsS -m "${CURL_MAX}" -w '\nhttp_code=%{http_code} time_total=%{time_total}s\n' \
   -H "${hdr_accept}" -H "${hdr_json}" "${session_hdr[@]}" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"generate_image","arguments":{"prompt":"a red cube on white background"}}}' \
   "${MCP_URL}" | tee /tmp/mcp_generate_smoke.json

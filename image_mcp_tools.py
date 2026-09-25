@@ -325,6 +325,8 @@ def register_image_tools(
         )
 
         async def _comfy_wait_progress(elapsed: float, state: str) -> None:
+            # Доходит до клиента только если тот прислал params._meta.progressToken
+            # и включён SSE-режим: в JSON-режиме SDK отбрасывает такие сообщения.
             try:
                 await ctx.report_progress(
                     min(99.0, elapsed),
