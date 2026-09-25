@@ -15,6 +15,7 @@ from typing import Any, Literal
 import httpx
 import websockets
 
+from comfy_progress import notify_wait_progress
 from comfy_workflow import resolve_comfy_output_path
 from image_generation_config import ImageGenerationConfig, load_image_generation_config
 from image_generation_errors import (
@@ -493,6 +494,7 @@ class ComfyUIClient:
         """
         started = time.monotonic()
         last_heartbeat = started
+        last_progress_notify = started
         deadline = started + self._ws_timeout()
 
         logger.info(
@@ -523,6 +525,10 @@ class ComfyUIClient:
                     state.status,
                     state.output_count,
                 )
+                elapsed = time.monotonic() - started
+                if elapsed - last_progress_notify >= 3.0:
+                    await notify_wait_progress(elapsed, state.status)
+                    last_progress_notify = elapsed
                 if state.is_terminal:
                     self._raise_if_history_error(state, prompt_id)
                     logger.info(
@@ -560,12 +566,14 @@ class ComfyUIClient:
 
                 now = time.monotonic()
                 if now - last_heartbeat >= 30.0:
+                    elapsed = now - started
                     logger.info(
                         "COMFY WAIT heartbeat prompt_id=%s elapsed=%.0fs state=%s",
                         prompt_id,
-                        now - started,
+                        elapsed,
                         state.status,
                     )
+                    await notify_wait_progress(elapsed, state.status)
                     last_heartbeat = now
 
                 if now >= deadline:

@@ -183,12 +183,6 @@ def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:
     assert init_response.status_code == 200
     init_payload = init_response.json()
     assert init_payload["result"]["protocolVersion"] == "2024-11-05"
-    session_id = init_response.headers.get("mcp-session-id")
-    assert session_id
-    session_headers = {
-        **MCP_HEADERS,
-        "Mcp-Session-Id": session_id,
-    }
 
     mcp_client.post(
         "/mcp/",
@@ -197,13 +191,13 @@ def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:
             "method": "notifications/initialized",
             "params": {},
         },
-        headers=session_headers,
+        headers=MCP_HEADERS,
     )
 
     tools_response = mcp_client.post(
         "/mcp/",
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-        headers=session_headers,
+        headers=MCP_HEADERS,
     )
 
     assert tools_response.status_code == 200

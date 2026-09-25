@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 from typing import Annotated, Any
 
-from mcp.server.mcpserver import MCPServer
+from comfy_progress import reset_wait_progress, set_wait_progress
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 from mcp.types import CallToolResult, ImageContent, TextContent
@@ -18,6 +20,7 @@ from image_mcp_capabilities import build_platform_capabilities_payload
 from image_mcp_ops import register_image_ops_tools
 from image_generation_errors import (
     ImageGenerationError,
+    InternalImageGenerationError,
     InvalidMaskImageError,
     InvalidReferenceImageError,
     InvalidRequestError,
@@ -235,6 +238,8 @@ def register_image_tools(
             str | None,
             Field(description=_SKETCH_FIELD_DESCRIPTION),
         ] = None,
+        *,
+        ctx: Context,
     ) -> Annotated[CallToolResult, GenerateImageStructuredOutput]:
         """Registered via ``add_tool``; see ``GENERATE_IMAGE_TOOL_DESCRIPTION``."""
         if _backends is None or _backends.generation is None:
@@ -319,16 +324,43 @@ def register_image_tools(
             sketch=decoded_sketch,
         )
 
+        async def _comfy_wait_progress(elapsed: float, state: str) -> None:
+            try:
+                await ctx.report_progress(
+                    min(99.0, elapsed),
+                    600.0,
+                    f"comfyui:{state}",
+                )
+            except Exception:
+                logger.debug("MCP progress notification failed", exc_info=True)
+
+        progress_token = set_wait_progress(_comfy_wait_progress)
         try:
-            result = await _backends.generation.generate(request)
-        except ImageGenerationError as error:
-            logger.warning(
-                "MCP generate_image failed code=%s message=%s details=%s",
-                public_error_code(error),
-                error.message,
-                error.details or {},
-            )
-            return _error_tool_result(error)
+            try:
+                result = await _backends.generation.generate(request)
+            except asyncio.CancelledError:
+                logger.warning(
+                    "MCP generate_image cancelled (client likely disconnected)",
+                )
+                raise
+            except ImageGenerationError as error:
+                logger.warning(
+                    "MCP generate_image failed code=%s message=%s details=%s",
+                    public_error_code(error),
+                    error.message,
+                    error.details or {},
+                )
+                return _error_tool_result(error)
+            except Exception as error:
+                logger.exception("MCP generate_image unexpected error")
+                return _error_tool_result(
+                    InternalImageGenerationError(
+                        "image generation failed unexpectedly",
+                        reason=str(error),
+                    ),
+                )
+        finally:
+            reset_wait_progress(progress_token)
 
         content: list[ImageContent] = []
 

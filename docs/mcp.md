@@ -5,7 +5,7 @@
 - **Имя сервера:** `Project Knowledge Gateway`
 - **Версия:** `1.2.0`
 - **Endpoint:** `POST /mcp/` (mount от корня FastAPI-приложения)
-- **Транспорт:** Streamable HTTP, ответы в JSON (`json_response=true`). По умолчанию **stateful** (сессия `Mcp-Session-Id`) — надёжнее для долгих `tools/call` (`generate_image`). Stateless: `MCP_STATELESS_HTTP=true` (ChatGPT Connector).
+- **Транспорт:** Streamable HTTP, stateless по умолчанию (`MCP_STATELESS_HTTP` не задан или `true`), ответы в JSON (`json_response=true`). Для клиентов с одной долгой сессией и `Mcp-Session-Id`: `MCP_STATELESS_HTTP=false`. Лог `Cleaning up crashed session` — MCP-сессия упала (см. traceback `Session … crashed` выше в логе); часто обрыв клиента или второй запрос на той же stateful-сессии во время `generate_image`.
 
 Проверка доступности без MCP-сессии:
 

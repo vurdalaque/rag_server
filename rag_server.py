@@ -1215,10 +1215,11 @@ def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
 
 
 def _mcp_stateless_http() -> bool:
-    return os.getenv("MCP_STATELESS_HTTP", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
+    """Stateless avoids shared session crashes when clients pipeline requests during long tools."""
+    return os.getenv("MCP_STATELESS_HTTP", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
     }
 
 
