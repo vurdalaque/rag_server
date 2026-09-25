@@ -6,6 +6,7 @@ import secrets
 import tempfile
 import time
 from contextlib import asynccontextmanager
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -508,6 +509,11 @@ async def shutdown_image_generation() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    print(
+        "MCP runtime "
+        f"mcp={package_version('mcp')} mcp-types={package_version('mcp-types')} "
+        f"stateless={_mcp_stateless_http()} json_response={_mcp_json_response()}"
+    )
     active = bundle_store().active_bundle()
 
     if active is None:

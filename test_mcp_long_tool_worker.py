@@ -11,6 +11,7 @@ import asyncio
 import os
 import socket
 import time
+from importlib.metadata import version as package_version
 
 os.environ["RAG_ADMIN_TOKEN"] = "test-token"
 os.environ["IMAGE_GENERATION_ENABLED"] = "true"
@@ -94,6 +95,8 @@ def tmp_rag_paths(tmp_path: pytest.TempPath) -> None:
 
 
 def test_mcp_initialized_client_waits_for_slow_backend(tmp_rag_paths: None) -> None:
+    assert package_version("mcp") == "2.2.0"
+    assert package_version("mcp-types") == "2.2.0"
     slow = _slow_mock_backend(SLOW_SECONDS)
 
     async def _create_backend() -> MagicMock:
