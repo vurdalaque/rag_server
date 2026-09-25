@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from typing import Annotated, Any
 
 from comfy_progress import reset_wait_progress, set_wait_progress
@@ -336,7 +337,14 @@ def register_image_tools(
             except Exception:
                 logger.debug("MCP progress notification failed", exc_info=True)
 
-        progress_token = set_wait_progress(_comfy_wait_progress)
+        json_response = os.getenv("MCP_JSON_RESPONSE", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        # JSON responses cannot carry request-scoped progress notifications.
+        # Emitting one can terminate a stateful session while the tool is running.
+        progress_token = set_wait_progress(None if json_response else _comfy_wait_progress)
         try:
             try:
                 result = await _backends.generation.generate(request)
