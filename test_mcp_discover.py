@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 
 import pytest
@@ -177,3 +179,63 @@ def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:
         "ask_project",
         "ping",
     }
+
+
+def test_mcp_lifecycle_logs_response_without_base64(caplog: pytest.LogCaptureFixture) -> None:
+    sent = []
+
+    async def fake_app(scope, _receive, send):
+        lifecycle = scope[rag_server.MCP_LIFECYCLE_SCOPE_KEY]
+        lifecycle["request_id"] = "request-7"
+        lifecycle["rpc_method"] = "tools/call"
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"mcp-session-id", b"session-9")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b'{"data":"SECRET_BASE64","structuredContent":{"prompt_',
+                "more_body": True,
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b'id":"prompt-123"}}',
+                "more_body": False,
+            }
+        )
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [],
+    }
+    caplog.set_level(logging.INFO, logger="rag_server.mcp_lifecycle")
+    asyncio.run(rag_server.wrap_mcp_lifecycle_logging(fake_app)(scope, receive, send))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert [message.split("event=", 1)[1].split(" ", 1)[0] for message in messages] == [
+        "RESPONSE_START",
+        "RESPONSE_SERIALIZED",
+        "RESPONSE_FINISHED",
+        "REQUEST_COMPLETE",
+    ]
+    assert all("timestamp=" in message and "correlation_id=" in message for message in messages)
+    assert all("request_id=request-7" in message for message in messages)
+    assert all("session_id=session-9" in message for message in messages)
+    assert "prompt_id=prompt-123" in messages[-2]
+    assert "prompt_id=prompt-123" in messages[-1]
+    assert "response_bytes=71" in messages[-1]
+    assert all("SECRET_BASE64" not in message for message in messages)
+    assert sent[-1]["more_body"] is False

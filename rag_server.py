@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 
 import json
+import logging
 import os
+import re
 import secrets
 import tempfile
 import time
+import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -1065,6 +1069,9 @@ async def chat_completions(
         ) from error
 
 
+MCP_LIFECYCLE_SCOPE_KEY = "mcp.lifecycle"
+MCP_LIFECYCLE_LOGGER = logging.getLogger("rag_server.mcp_lifecycle")
+MCP_PROMPT_ID_PATTERN = re.compile(rb'"prompt_id"\s*:\s*"([^"\\]+)"')
 MCP_PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion"
 MCP_CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"
 MCP_DEFAULT_MODERN_VERSION = LATEST_MODERN_VERSION
@@ -1179,6 +1186,121 @@ class _BodyReplayReceive:
         return await self._receive()
 
 
+def _mcp_lifecycle_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _scope_header(scope: Scope, name: str) -> str | None:
+    expected = name.lower().encode("latin-1")
+    for key, value in scope.get("headers", []):
+        if key.lower() == expected:
+            return value.decode("latin-1")
+    return None
+
+
+def _message_header(message: Message, name: str) -> str | None:
+    expected = name.lower().encode("latin-1")
+    for key, value in message.get("headers", []):
+        if key.lower() == expected:
+            return value.decode("latin-1")
+    return None
+
+
+def _log_mcp_lifecycle(event: str, state: dict[str, Any], **values: Any) -> None:
+    fields = {
+        "timestamp": _mcp_lifecycle_timestamp(),
+        "event": event,
+        "correlation_id": state["correlation_id"],
+        "http_method": state["http_method"],
+        "rpc_method": state.get("rpc_method") or "-",
+        "request_id": state.get("request_id", "-"),
+        "session_id": state.get("session_id") or "-",
+        "prompt_id": state.get("prompt_id") or "-",
+        **values,
+    }
+    MCP_LIFECYCLE_LOGGER.info(
+        "MCP HTTP %s",
+        " ".join(f"{key}={value}" for key, value in fields.items()),
+    )
+
+
+def wrap_mcp_lifecycle_logging(app: ASGIApp) -> ASGIApp:
+    """Log MCP HTTP lifecycle without retaining or logging response bodies."""
+
+    async def middleware(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+
+        started = time.perf_counter()
+        state: dict[str, Any] = {
+            "correlation_id": uuid.uuid4().hex,
+            "http_method": scope.get("method", "-"),
+            "session_id": _scope_header(scope, "mcp-session-id"),
+            "response_bytes": 0,
+            "serialized": False,
+            "prompt_tail": b"",
+        }
+        scope[MCP_LIFECYCLE_SCOPE_KEY] = state
+
+        async def lifecycle_send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                state["status"] = message["status"]
+                state["session_id"] = (
+                    _message_header(message, "mcp-session-id")
+                    or state.get("session_id")
+                )
+                _log_mcp_lifecycle("RESPONSE_START", state, status=message["status"])
+                await send(message)
+                return
+
+            if message["type"] != "http.response.body":
+                await send(message)
+                return
+
+            body = message.get("body", b"")
+            state["response_bytes"] += len(body)
+            if body and not state["serialized"]:
+                state["serialized"] = True
+                _log_mcp_lifecycle("RESPONSE_SERIALIZED", state, chunk_bytes=len(body))
+
+            probe = state["prompt_tail"] + body
+            match = MCP_PROMPT_ID_PATTERN.search(probe)
+            if match is not None:
+                state["prompt_id"] = match.group(1).decode("utf-8", "replace")
+            state["prompt_tail"] = probe[-256:]
+
+            await send(message)
+            if not message.get("more_body", False):
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                _log_mcp_lifecycle(
+                    "RESPONSE_FINISHED",
+                    state,
+                    status=state.get("status", "-"),
+                    elapsed_ms=elapsed_ms,
+                    response_bytes=state["response_bytes"],
+                )
+
+        outcome = "success"
+        try:
+            await app(scope, receive, lifecycle_send)
+        except BaseException:
+            outcome = "error"
+            raise
+        finally:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            _log_mcp_lifecycle(
+                "REQUEST_COMPLETE",
+                state,
+                outcome=outcome,
+                status=state.get("status", "-"),
+                elapsed_ms=elapsed_ms,
+                response_bytes=state["response_bytes"],
+            )
+
+    return middleware
+
+
 def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
     """Inject MCP routing headers from JSON _meta when proxies strip them."""
 
@@ -1207,6 +1329,10 @@ def wrap_mcp_modern_headers(app: ASGIApp) -> ASGIApp:
         params = payload.get("params")
         meta = params.get("_meta") if isinstance(params, dict) else None
         method = payload.get("method")
+        lifecycle = scope.get(MCP_LIFECYCLE_SCOPE_KEY)
+        if isinstance(lifecycle, dict):
+            lifecycle["request_id"] = payload.get("id", "-")
+            lifecycle["rpc_method"] = method if isinstance(method, str) else "-"
 
         if isinstance(meta, dict):
             protocol_version = meta.get(MCP_PROTOCOL_VERSION_META)
@@ -1240,12 +1366,14 @@ def _mcp_stateless_http() -> bool:
 
 # Stateful Streamable HTTP keeps the initialized transport alive while a long
 # tool is running. Stateless mode remains available for connector-style clients.
-mcp_app = wrap_mcp_modern_headers(
-    mcp.streamable_http_app(
-        streamable_http_path="/",
-        json_response=_mcp_json_response(),
-        stateless_http=_mcp_stateless_http(),
-        transport_security=MCP_TRANSPORT_SECURITY,
+mcp_app = wrap_mcp_lifecycle_logging(
+    wrap_mcp_modern_headers(
+        mcp.streamable_http_app(
+            streamable_http_path="/",
+            json_response=_mcp_json_response(),
+            stateless_http=_mcp_stateless_http(),
+            transport_security=MCP_TRANSPORT_SECURITY,
+        )
     )
 )
 app.mount("/mcp", mcp_app)
