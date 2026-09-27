@@ -334,7 +334,11 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 
 Пока backend Qwen Image 2.1 квадратный: если заданы **и** `width`, **и** `height` и они **не равны** — `unsupported_parameter` с `constraint: width_must_equal_height`. Одно поле или равные значения задают квадратное разрешение.
 
-**Ответ:** MCP `CallToolResult` — блоки `image` (base64) в `content`; метаданные (`seed`, `prompt_id`, `image_count`, `timings`) в `structuredContent` + `outputSchema` в discovery.
+**Ответ:** `CallToolResult` содержит короткое текстовое подтверждение и `structuredContent` с `seed`, стабильным `prompt_id`, `image_count`, `timings` и `artifacts[]` (`artifact_id`, `mime_type`, `size_bytes`, `filename`). Изображения не вкладываются base64 в JSON-RPC.
+
+Каждый artifact скачивается бинарным GET: `GET /mcp/artifacts/{artifact_id}` (через MCP proxy: `{MCP_RAG_URL без завершающего слэша}/artifacts/{artifact_id}`). Gateway требует обычный Bearer API key; сам artifact ID является непредсказуемой capability для внутреннего direct endpoint. ID детерминирован от `prompt_id` и индекса, поэтому его можно восстановить как `{prompt_id}_{index}` при потере tools/call response. Повторно запускать generation для скачивания нельзя.
+
+Артефакты хранятся в `MCP_ARTIFACTS_DIR` (по умолчанию `data/mcp-artifacts`) и удаляются лениво после `MCP_ARTIFACT_TTL_SECONDS` (по умолчанию 604800 секунд).
 
 **Ошибки:** JSON `{"error": {"code", "message", "details?"}}` — в т.ч. `invalid_reference_image`, `invalid_mask`, `invalid_sketch`, `unsupported_parameter`, `safety_rejected`, `backend_unavailable`, `backend_error`, `generation_failed`, `output_too_large`, `timeout`.
 

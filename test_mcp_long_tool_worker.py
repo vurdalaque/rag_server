@@ -45,7 +45,7 @@ def _free_port() -> int:
 
 def _slow_mock_backend(delay_seconds: float) -> MagicMock:
     backend = MagicMock()
-    png_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * 32
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * (1024 * 1024 - 8)
 
     async def _capabilities() -> dict[str, Any]:
         return {
@@ -91,6 +91,7 @@ def tmp_rag_paths(tmp_path: pytest.TempPath) -> None:
     os.environ["RAG_BUNDLE_STATE_DIR"] = str(tmp_path / "state")
     os.environ["RAG_INDEX_FILE"] = str(tmp_path / "missing.faiss")
     os.environ["RAG_METADATA_FILE"] = str(tmp_path / "missing.jsonl")
+    os.environ["MCP_ARTIFACTS_DIR"] = str(tmp_path / "artifacts")
     rag_server.rag_service.clear()
 
 
@@ -148,13 +149,65 @@ def test_mcp_initialized_client_waits_for_slow_backend(tmp_rag_paths: None) -> N
                             {"prompt": "red cube"},
                         )
                         elapsed = time.monotonic() - started
+                        assert result.is_error is not True
+                        assert not any(
+                            getattr(block, "type", None) == "image"
+                            for block in result.content
+                        )
+                        first_artifact = result.structured_content["artifacts"][0]
+                        artifact_response = await mcp_client.get(
+                            f"http://127.0.0.1:{port}/mcp/artifacts/"
+                            f"{first_artifact['artifact_id']}"
+                        )
+                        assert artifact_response.status_code == 200
+                        assert len(artifact_response.content) == first_artifact["size_bytes"]
+
+                        calls = {"count": 0}
+
+                        async def _fast_generate(_request: Any) -> ImageGenerationResult:
+                            calls["count"] += 1
+                            return ImageGenerationResult(
+                                images=[
+                                    GeneratedImage(
+                                        data=b"\x89PNG\r\n\x1a\n" + b"y" * (1024 * 1024 - 8),
+                                        mime_type="image/png",
+                                    )
+                                ],
+                                seed=1,
+                                prompt_id=f"stress-{calls['count']}",
+                                timings={},
+                            )
+
+                        slow.generate = AsyncMock(side_effect=_fast_generate)
+                        for _ in range(100):
+                            repeated = await session.call_tool(
+                                "generate_image",
+                                {"prompt": "sequential artifact stress"},
+                            )
+                            repeated_artifact = repeated.structured_content["artifacts"][0]
+                            downloaded = await mcp_client.get(
+                                f"http://127.0.0.1:{port}/mcp/artifacts/"
+                                f"{repeated_artifact['artifact_id']}"
+                            )
+                            assert downloaded.status_code == 200
+                            assert len(downloaded.content) == 1024 * 1024
+
+                        concurrent = await asyncio.gather(
+                            *(
+                                session.call_tool(
+                                    "generate_image",
+                                    {"prompt": f"concurrent artifact {index}"},
+                                )
+                                for index in range(4)
+                            )
+                        )
+                        assert len(concurrent) == 4
+                        assert all(not item.is_error for item in concurrent)
         finally:
             server.should_exit = True
             await server_task
 
-        # Сессия и HTTP-соединение дожили до конца долгого вызова.
+        # State and one-MiB artifact survived long, sequential and concurrent calls.
         assert elapsed >= SLOW_SECONDS, elapsed
-        assert result.is_error is not True
-        assert any(getattr(block, "type", None) == "image" for block in result.content)
 
     asyncio.run(_run())

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,6 +40,7 @@ def mcp_client(tmp_path_factory: pytest.TempPathFactory) -> TestClient:
             "RAG_BUNDLE_STATE_DIR",
             "RAG_INDEX_FILE",
             "RAG_METADATA_FILE",
+            "MCP_ARTIFACTS_DIR",
             "RAG_METRICS_PROBE_ENABLED",
             "IMAGE_GENERATION_ENABLED",
             "IMAGE_ANALYSIS_ENABLED",
@@ -56,6 +58,7 @@ def mcp_client(tmp_path_factory: pytest.TempPathFactory) -> TestClient:
     os.environ["RAG_BUNDLE_STATE_DIR"] = str(tmp_path / "state")
     os.environ["RAG_INDEX_FILE"] = str(tmp_path / "missing.faiss")
     os.environ["RAG_METADATA_FILE"] = str(tmp_path / "missing.jsonl")
+    os.environ["MCP_ARTIFACTS_DIR"] = str(tmp_path / "artifacts")
     os.environ["RAG_METRICS_PROBE_ENABLED"] = "false"
     rag_server.rag_service.clear()
 
@@ -239,3 +242,63 @@ def test_mcp_lifecycle_logs_response_without_base64(caplog: pytest.LogCaptureFix
     assert "response_bytes=71" in messages[-1]
     assert all("SECRET_BASE64" not in message for message in messages)
     assert sent[-1]["more_body"] is False
+
+
+@pytest.mark.parametrize("size_mb", [1, 2, 5])
+def test_mcp_artifact_download_streams_binary(
+    mcp_client: TestClient,
+    size_mb: int,
+) -> None:
+    from image_generation import GeneratedImage, ImageGenerationResult
+    from image_mcp_tools import store_generated_image_artifacts
+
+    image_data = b"\x89PNG\r\n\x1a\n" + bytes([size_mb]) * (size_mb * 1024 * 1024 - 8)
+    generated = ImageGenerationResult(
+        images=[GeneratedImage(data=image_data, mime_type="image/png")],
+        seed=7,
+        prompt_id=f"download-test-{size_mb}",
+        timings={},
+    )
+    [artifact] = store_generated_image_artifacts(generated)
+
+    response = mcp_client.get(f"/mcp/artifacts/{artifact.artifact_id}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert int(response.headers["content-length"]) == len(image_data)
+    assert response.content == image_data
+
+
+def test_mcp_artifact_download_recovers_from_comfy_history(
+    mcp_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from image_generation import GeneratedImage
+
+    image_data = b"\x89PNG\r\n\x1a\nrecovered-after-client-disconnect"
+    calls = {"count": 0}
+
+    async def recover_generated_image(prompt_id: str, image_index: int):
+        calls["count"] += 1
+        assert prompt_id == "recover-job"
+        assert image_index == 0
+        return GeneratedImage(
+            data=image_data,
+            mime_type="image/png",
+            prompt_id=prompt_id,
+        ), "success"
+
+    monkeypatch.setattr(
+        rag_server,
+        "image_backend",
+        SimpleNamespace(recover_generated_image=recover_generated_image),
+    )
+    response = mcp_client.get("/mcp/artifacts/recover-job_0")
+
+    assert response.status_code == 200
+    assert response.content == image_data
+    assert calls["count"] == 1
+
+    second = mcp_client.get("/mcp/artifacts/recover-job_0")
+    assert second.status_code == 200
+    assert calls["count"] == 1

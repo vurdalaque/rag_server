@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
+import re
+import time
+import uuid
+from pathlib import Path
 from typing import Annotated, Any
 
 from comfy_progress import reset_wait_progress, set_wait_progress
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
-from mcp.types import CallToolResult, ImageContent, TextContent
+from mcp.types import CallToolResult, TextContent
 
 from image_generation import GenerateImageRequest
 from image_mcp_backends import ImageMcpBackends
@@ -36,6 +39,7 @@ from image_reference import (
 from image_mcp_schemas import (
     GENERATE_IMAGE_TOOL_DESCRIPTION,
     GenerateImageInput,
+    GeneratedArtifactReference,
     GenerateImageStructuredOutput,
     ImageGenerationCapabilitiesOutput,
     _MASK_FIELD_DESCRIPTION,
@@ -77,6 +81,124 @@ IMAGE_OPS_TOOL_NAMES: tuple[str, ...] = (
 _backends: ImageMcpBackends | None = None
 _registered_tool_names: list[str] = []
 _registered = False
+_ARTIFACT_ID_PATTERN = re.compile(r"(?P<job>[A-Za-z0-9-]{1,128})_(?P<index>\d{1,3})\Z")
+_ARTIFACT_MIME_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+}
+
+
+def _artifact_root() -> Path:
+    return Path(os.getenv("MCP_ARTIFACTS_DIR", "data/mcp-artifacts")).resolve()
+
+
+def _artifact_ttl_seconds() -> float:
+    try:
+        return max(60.0, float(os.getenv("MCP_ARTIFACT_TTL_SECONDS", "604800")))
+    except ValueError:
+        return 604800.0
+
+
+def cleanup_expired_image_artifacts(now: float | None = None) -> int:
+    root = _artifact_root()
+    if not root.is_dir():
+        return 0
+    current = time.time() if now is None else now
+    cutoff = current - _artifact_ttl_seconds()
+    removed = 0
+    for path in root.iterdir():
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            logger.warning("MCP ARTIFACT CLEANUP FAILED filename=%s", path.name)
+    return removed
+
+
+def _safe_artifact_job_id(prompt_id: str | None) -> str:
+    value = str(prompt_id or uuid.uuid4().hex)
+    return value if re.fullmatch(r"[A-Za-z0-9-]{1,128}", value) else uuid.uuid4().hex
+
+
+def store_generated_image_artifact(
+    prompt_id: str | None,
+    image_index: int,
+    image,
+) -> GeneratedArtifactReference:
+    if image_index < 0 or image_index > 999:
+        raise InvalidRequestError("generated artifact index is out of range")
+    job_id = _safe_artifact_job_id(prompt_id)
+    mime_type = image.mime_type.lower()
+    extension = _ARTIFACT_MIME_EXTENSIONS.get(mime_type)
+    if extension is None:
+        raise InvalidRequestError("unsupported generated artifact MIME type", mime_type=mime_type)
+    root = _artifact_root()
+    root.mkdir(parents=True, exist_ok=True)
+    artifact_id = f"{job_id}_{image_index}"
+    target = root / f"{artifact_id}{extension}"
+    temporary = root / f".{artifact_id}.{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.write_bytes(image.data)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    filename = f"image_{image_index + 1}{extension}"
+    logger.info(
+        "MCP ARTIFACT STORED prompt_id=%s artifact_id=%s bytes=%s mime_type=%s",
+        prompt_id or job_id,
+        artifact_id,
+        len(image.data),
+        mime_type,
+    )
+    return GeneratedArtifactReference(
+        artifact_id=artifact_id,
+        mime_type=mime_type,
+        size_bytes=len(image.data),
+        filename=filename,
+    )
+
+
+def store_generated_image_artifacts(result) -> list[GeneratedArtifactReference]:
+    """Persist image bytes before returning compact metadata to the caller."""
+    cleanup_expired_image_artifacts()
+    indices: dict[str, int] = {}
+    references: list[GeneratedArtifactReference] = []
+    for image in result.images:
+        job_id = _safe_artifact_job_id(image.prompt_id or result.prompt_id)
+        index = indices.get(job_id, 0)
+        references.append(store_generated_image_artifact(job_id, index, image))
+        indices[job_id] = index + 1
+    return references
+
+
+def parse_image_artifact_id(artifact_id: str) -> tuple[str, int] | None:
+    match = _ARTIFACT_ID_PATTERN.fullmatch(artifact_id)
+    if match is None:
+        return None
+    return match.group("job"), int(match.group("index"))
+
+
+def resolve_generated_image_artifact(artifact_id: str) -> tuple[Path, str, str] | None:
+    parsed = parse_image_artifact_id(artifact_id)
+    if parsed is None:
+        return None
+    job_id, index = parsed
+    root = _artifact_root()
+    cutoff = time.time() - _artifact_ttl_seconds()
+    for mime_type, extension in _ARTIFACT_MIME_EXTENSIONS.items():
+        path = root / f"{job_id}_{index}{extension}"
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+                return None
+        except OSError:
+            continue
+        return path, mime_type, f"image_{index + 1}{extension}"
+    return None
 
 
 def image_tools_registered() -> bool:
@@ -372,32 +494,42 @@ def register_image_tools(
         finally:
             reset_wait_progress(progress_token)
 
-        content: list[ImageContent] = []
-
-        for image in result.images:
-            content.append(
-                ImageContent(
-                    type="image",
-                    data=base64.b64encode(image.data).decode("ascii"),
-                    mimeType=image.mime_type,
-                )
+        try:
+            artifact_refs = await asyncio.to_thread(store_generated_image_artifacts, result)
+        except Exception as error:
+            logger.exception(
+                "MCP artifact persistence failed prompt_id=%s",
+                result.prompt_id,
+            )
+            return _error_tool_result(
+                InternalImageGenerationError(
+                    "generated image could not be persisted for download",
+                    prompt_id=result.prompt_id,
+                    reason=str(error),
+                ),
             )
 
         structured = GenerateImageStructuredOutput.from_generation(
             seed=result.seed,
             prompt_id=result.prompt_id,
             image_count=len(result.images),
+            artifacts=artifact_refs,
             timings=result.timings,
         )
 
         tool_result = CallToolResult(
-            content=content,
+            content=[
+                TextContent(
+                    type="text",
+                    text="Image generation finished. Download the returned artifact IDs.",
+                )
+            ],
             structured_content=structured.model_dump(mode="json"),
         )
         logger.info(
             "MCP RETURN generate_image prompt_id=%s artifacts=%s seed=%s",
             result.prompt_id,
-            len(content),
+            len(artifact_refs),
             structured.seed,
         )
         logger.info(

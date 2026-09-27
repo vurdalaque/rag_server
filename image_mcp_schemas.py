@@ -274,14 +274,24 @@ def upscale_image_input_json_schema() -> dict[str, Any]:
     return UpscaleImageInput.model_json_schema()
 
 
+class GeneratedArtifactReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    mime_type: str
+    size_bytes: int
+    filename: str
+
+
 class GenerateImageStructuredOutput(BaseModel):
-    """Metadata for a successful generate_image call (images stay in content blocks)."""
+    """Compact generation metadata; image bytes are retrieved separately."""
 
     model_config = ConfigDict(extra="forbid")
 
     seed: int | None = None
     prompt_id: str | None = None
     image_count: int
+    artifacts: list[GeneratedArtifactReference] = Field(default_factory=list)
     timings: dict[str, float] = Field(default_factory=dict)
 
     @classmethod
@@ -291,12 +301,14 @@ class GenerateImageStructuredOutput(BaseModel):
         seed: int | None,
         prompt_id: str | None,
         image_count: int,
+        artifacts: list[GeneratedArtifactReference] | None = None,
         timings: dict[str, float] | None,
     ) -> GenerateImageStructuredOutput:
         return cls(
             seed=seed,
             prompt_id=prompt_id,
             image_count=image_count,
+            artifacts=list(artifacts or []),
             timings=dict(timings or {}),
         )
 

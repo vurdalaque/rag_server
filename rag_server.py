@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from mcp.server.caching import CacheHint
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -45,7 +45,13 @@ from rag_metrics import (
     track_mcp_tool,
     update_index_state,
 )
-from image_mcp_tools import list_mcp_tool_names, list_ping_tool_names
+from image_mcp_tools import (
+    list_mcp_tool_names,
+    list_ping_tool_names,
+    parse_image_artifact_id,
+    resolve_generated_image_artifact,
+    store_generated_image_artifact,
+)
 from rag_service import (
     LLM_MODEL,
     LLM_URL,
@@ -616,6 +622,34 @@ async def health() -> dict[str, Any]:
         },
         "mcp_tools": list_mcp_tool_names(),
     }
+
+
+@app.get("/mcp/artifacts/{artifact_id}")
+async def download_mcp_artifact(artifact_id: str) -> FileResponse:
+    artifact = resolve_generated_image_artifact(artifact_id)
+    if artifact is None:
+        parsed_id = parse_image_artifact_id(artifact_id)
+        recover = getattr(image_backend, "recover_generated_image", None)
+        if parsed_id is not None and callable(recover):
+            prompt_id, image_index = parsed_id
+            image, state = await recover(prompt_id, image_index)
+            if image is None:
+                if state == "pending":
+                    raise HTTPException(status_code=409, detail="generation is still pending")
+                raise HTTPException(status_code=404, detail="artifact not found or expired")
+            store_generated_image_artifact(prompt_id, image_index, image)
+            artifact = resolve_generated_image_artifact(artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact not found or expired")
+    path, mime_type, filename = artifact
+    logger = logging.getLogger("rag_server.mcp_artifacts")
+    logger.info(
+        "MCP ARTIFACT DOWNLOAD artifact_id=%s mime_type=%s bytes=%s",
+        artifact_id,
+        mime_type,
+        path.stat().st_size,
+    )
+    return FileResponse(path, media_type=mime_type, filename=filename)
 
 
 @app.post("/admin/index/upload")

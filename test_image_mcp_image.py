@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import jsonschema
 import pytest
 from mcp.server.mcpserver import MCPServer
-from mcp.types import ImageContent
 
 import image_mcp_tools
 from image_generation import GeneratedImage, ImageGenerationResult
@@ -90,7 +89,8 @@ def _sample_capabilities_payload(**overrides: Any) -> dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_image_tools_state() -> None:
+def _reset_image_tools_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
     reset_image_mcp_registration()
     yield
     reset_image_mcp_registration()
@@ -242,16 +242,18 @@ def test_generate_image_success_structured_output_and_images() -> None:
     result = asyncio.run(server.call_tool("generate_image", {"prompt": "red cube"}))
 
     assert result.is_error is not True
-    image_blocks = [block for block in result.content if isinstance(block, ImageContent)]
-    assert len(image_blocks) == 2
-    assert all(block.mime_type == "image/png" for block in image_blocks)
+    assert all(block.type == "text" for block in result.content)
     assert result.structured_content is not None
     assert "data" not in result.structured_content
     assert result.structured_content["seed"] == 42
     assert result.structured_content["image_count"] == 2
+    artifacts = result.structured_content["artifacts"]
+    assert [artifact["artifact_id"] for artifact in artifacts] == ["prompt-1_0", "prompt-1_1"]
+    assert all(artifact["mime_type"] == "image/png" for artifact in artifacts)
+    assert all(artifact["size_bytes"] == len(png_bytes) for artifact in artifacts)
     jsonschema.validate(instance=result.structured_content, schema=gen_tool.output_schema)
     text_blocks = [block for block in result.content if block.type == "text"]
-    assert text_blocks == []
+    assert len(text_blocks) == 1
 
 
 def test_generate_image_comfy_error_stays_is_error() -> None:

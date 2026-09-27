@@ -34,6 +34,7 @@ class GeneratedImage:
     data: bytes
     mime_type: str
     filename: str | None = None
+    prompt_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -407,6 +408,7 @@ class ComfyUIBackend:
                             data=blob,
                             mime_type=str(item.get("mime_type", "image/png")),
                             filename=item.get("filename"),
+                            prompt_id=str(item.get("prompt_id") or last_prompt_id or ""),
                         )
                     )
 
@@ -431,6 +433,44 @@ class ComfyUIBackend:
             prompt_id=last_prompt_id,
             timings={},
         )
+
+    async def recover_generated_image(
+        self,
+        prompt_id: str,
+        image_index: int,
+    ) -> tuple[GeneratedImage | None, str]:
+        """Reconcile a previously submitted Comfy job from history, never resubmit it."""
+        client = self._client_instance()
+        history = await client.fetch_history(prompt_id)
+        entry = client.history_entry_for_prompt(history, prompt_id)
+        state = client.classify_history_entry(entry)
+        if state.status != "success":
+            if state.status == "error":
+                client._raise_if_history_error(state, prompt_id)
+            return None, state.status
+        outputs = client.extract_output_images(history, prompt_id)
+        if image_index < 0 or image_index >= len(outputs):
+            return None, "output_missing"
+        output = outputs[image_index]
+        data = await client.fetch_output_bytes(output)
+        if len(data) > self._config.max_output_bytes:
+            raise OutputTooLargeError(
+                "recovered output exceeds server byte limit",
+                max_bytes=self._config.max_output_bytes,
+            )
+        mime_type = mimetypes.guess_type(output.filename)[0] or "image/png"
+        logger.info(
+            "COMFY ARTIFACT RECOVERED prompt_id=%s image_index=%s bytes=%s",
+            prompt_id,
+            image_index,
+            len(data),
+        )
+        return GeneratedImage(
+            data=data,
+            mime_type=mime_type,
+            filename=output.filename,
+            prompt_id=prompt_id,
+        ), "success"
 
     async def capabilities(self) -> dict[str, Any]:
         if self._capabilities_cache is not None:

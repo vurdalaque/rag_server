@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from PIL import Image
 from mcp.server.mcpserver import MCPServer
-from mcp.types import ImageContent
 
 from image_generation import (
     ComfyUIBackend,
@@ -88,7 +87,8 @@ def _reset_tools() -> None:
 
 
 @pytest.fixture
-def mcp_server() -> tuple[MCPServer, MagicMock]:
+def mcp_server(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> tuple[MCPServer, MagicMock]:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
     server = MCPServer("contract-test")
     backend = MagicMock()
     backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
@@ -126,6 +126,8 @@ def test_prompt_only_generate(mcp_server: tuple[MCPServer, MagicMock]) -> None:
     assert request.reference_images == ()
     assert request.mask is None
     assert request.sketch is None
+    assert result.structured_content["artifacts"][0]["artifact_id"] == "pid_0"
+    assert result.structured_content["artifacts"][0]["size_bytes"] == 8
 
 
 def test_one_reference_image(mcp_server: tuple[MCPServer, MagicMock]) -> None:
@@ -205,9 +207,12 @@ def test_image_count_two_and_four(mcp_server: tuple[MCPServer, MagicMock]) -> No
     result = asyncio.run(
         server.call_tool("generate_image", {"prompt": "x", "image_count": 2}),
     )
-    images = [b for b in result.content if isinstance(b, ImageContent)]
-    assert len(images) == 2
+    assert all(block.type == "text" for block in result.content)
     assert result.structured_content["image_count"] == 2
+    assert [item["artifact_id"] for item in result.structured_content["artifacts"]] == [
+        "pid_0",
+        "pid_1",
+    ]
 
     backend.generate = AsyncMock(
         return_value=ImageGenerationResult(
