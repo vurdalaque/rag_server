@@ -39,6 +39,8 @@ _SR_NODE_CLASSES = frozenset(
 class UpscaleRequest:
     image: bytes
     scale: float | None = None
+    target_width: int | None = None
+    target_height: int | None = None
 
 
 @dataclass(frozen=True)
@@ -148,7 +150,22 @@ def _resolve_upscale_params(
             height=source_height,
         )
 
-    scale = float(request.scale if request.scale is not None else config.default_scale)
+    if (request.target_width is None) != (request.target_height is None):
+        raise UnsupportedParameterError("target_width and target_height must be supplied together")
+    if request.target_width is not None and request.target_height is not None:
+        if request.target_width < 1 or request.target_height < 1:
+            raise InvalidRequestError("target dimensions must be positive")
+        width_scale = request.target_width / source_width
+        height_scale = request.target_height / source_height
+        if abs(width_scale - height_scale) > 1e-6:
+            raise UnsupportedParameterError("target dimensions must use the same scale factor")
+        inferred_scale = width_scale
+        if request.scale is not None and abs(float(request.scale) - inferred_scale) > 1e-6:
+            raise UnsupportedParameterError("scale does not match requested target dimensions")
+        scale = inferred_scale
+    else:
+        scale = float(request.scale if request.scale is not None else config.default_scale)
+
     if scale < config.min_scale or scale > config.max_scale:
         raise UnsupportedParameterError(
             "scale is outside supported range",
@@ -156,8 +173,16 @@ def _resolve_upscale_params(
             min_scale=config.min_scale,
             max_scale=config.max_scale,
         )
+    if not any(abs(scale - supported) <= 0.06 for supported in config.supported_sr_scales):
+        raise UnsupportedParameterError(
+            "requested upscale factor is not supported by the configured AI model",
+            scale=scale,
+            supported_scales=list(config.supported_sr_scales),
+        )
     out_w = max(1, int(round(source_width * scale)))
     out_h = max(1, int(round(source_height * scale)))
+    if request.target_width is not None and (out_w != request.target_width or out_h != request.target_height):
+        raise UnsupportedParameterError("target dimensions are not an exact supported model scale")
     _assert_output_dimensions(out_w, out_h, config)
     return _ResolvedUpscale(
         scale=scale,
@@ -331,7 +356,7 @@ class ComfyUpscaleBackend:
         self._validate_input_mime(request.image)
         t0 = time.monotonic()
         resolved = _resolve_upscale_params(request, self._config)
-        timings["validate"] = time.monotonic() - t0
+        timings["validate_ms"] = elapsed_ms(t0)
 
         png_bytes = _canonicalize_png(request.image)
         request_id = str(uuid.uuid4())
@@ -367,7 +392,7 @@ class ComfyUpscaleBackend:
 
             workflow = build_comfy_upscale_workflow(
                 request_id=request_id,
-                uploaded_filename=upload.name,
+                uploaded_filename=uploaded.name,
                 model_name=model_name,
             )
 
@@ -384,7 +409,7 @@ class ComfyUpscaleBackend:
                     reason=error.message,
                     code=error.code,
                 ) from error
-            timings["execute_ms"] = elapsed_ms(t_exec)
+            timings["upscale_ms"] = elapsed_ms(t_exec)
 
         if not raw_outputs:
             raise UpscaleFailedError("ComfyUI upscale returned no images")
@@ -407,14 +432,14 @@ class ComfyUpscaleBackend:
             "method": "super_resolution",
             "models": list(self._available_models),
             "supported_scale_factors": list(self._config.supported_sr_scales),
-            "max_scale": self._config.max_scale,
-            "min_scale": self._config.min_scale,
+            "max_scale": max(self._config.supported_sr_scales),
+            "min_scale": min(self._config.supported_sr_scales),
             "default_scale": self._config.default_scale,
             "max_input_bytes": self._config.max_input_bytes,
             "max_output_bytes": self._config.max_output_bytes,
             "max_input_dimension": self._config.max_input_dimension,
             "max_output_dimension": self._config.max_output_dimension,
-            "supports_target_dimensions": False,
+            "supports_target_dimensions": True,
             "supports_scale_factor": True,
             "scales": list(self._config.supported_sr_scales),
         }

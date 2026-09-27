@@ -346,9 +346,11 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 
 ---
 
-### `image_generation_capabilities` (draft, conditional)
+### `image_generation_capabilities`
 
-Structured JSON: `inputs.reference_images|mask|sketch` (supported, max_count, semantics), `resolution.min|max`, `defaults`, `safety_validation_enabled`, `samplers`, плюс `analysis`, `segmentation`, `upscale` (supported, лимиты, mask semantics). Deprecated aliases: `max_reference_images`, `max_reference_bytes`, `safety_enabled` (совпадают с canonical полями).
+Structured JSON сообщает фактическую runtime-доступность generation, analysis, segmentation modes (text/points/box/mask_refinement) и Real-ESRGAN upscale. Text segmentation отмечается поддерживаемой только если Grounding DINO node и настроенная модель найдены в ComfyUI; upscale — только если probe находит SR nodes и модель. Deprecated reference/safety aliases сохраняются.
+
+Concurrency ограничивается отдельными async семафорами: `COMFYUI_CONCURRENCY_LIMIT` (default 4) для GPU orchestration и `SGLANG_CONCURRENCY_LIMIT` (default 8) для VLM/safety. Старые `IMAGE_COMFY_MAX_CONCURRENT` и `IMAGE_VLM_MAX_CONCURRENT` остаются fallback aliases.
 
 ---
 
@@ -361,13 +363,13 @@ Read-only multimodal анализ: описание, сравнение before/a
 | `images` | `string[]` | 1..N PNG/JPEG/WebP (base64 или MCP ImageContent) |
 | `instruction` | `string?` | Вопрос или задача анализа (опционально) |
 
-**Ответ:** `structuredContent.text` + тайминги; ошибки `analysis_failed`, `invalid_image`, `backend_unavailable`, …
+**Ответ:** `structuredContent.text` + `timings.total_ms` и `timings.analyze_ms`; все значения timing — миллисекунды. Ошибки `analysis_failed`, `invalid_image`, `backend_unavailable`, …
 
 ---
 
 ### `segment_image` (conditional)
 
-Пиксельная маска через ComfyUI (DINO → SAM2 для text; SAM2 без DINO для points/box). `not_found` — если DINO не нашёл объект (SAM2 не вызывается).
+Пиксельная маска через ComfyUI (Grounding DINO top-1 → SAM2 для text; SAM2 без DINO для points/box). `not_found` возвращается, если лучший score ниже `IMAGE_GROUNDING_THRESHOLD` или bbox отсутствует; SAM2 в таком случае не запускается.
 
 | Параметр | Тип | Описание |
 |----------|-----|----------|
@@ -377,16 +379,22 @@ Read-only multimodal анализ: описание, сравнение before/a
 | `box` | `object?` | `{x1,y1,x2,y2}` нормализованный bbox |
 | `mask` | `string?` | Существующая маска (только вместе с `points` для refinement) |
 
+Успешный ответ содержит `timings.total_ms`; для text mode дополнительно `detect_ms` и `segment_ms`. Все timing-поля измеряются в миллисекундах. Grounding DINO, затем SAM2 выполняются последовательно; spatial prompts обходят DINO.
+
 ---
 
-### `upscale_image` (conditional)
+### `upscale_image`
 
-Super-resolution / upscale (не обычный resize в Realm). MVP: `scale=4` (RealESRGAN через ComfyUI).
+Super-resolution через ComfyUI Real-ESRGAN x4 (геометрического/PIL fallback нет). Если backend/model недоступен, инструмент возвращает `backend_unavailable`, а capability сообщает `supported=false`.
 
 | Параметр | Тип | Описание |
 |----------|-----|----------|
 | `image` | `string` | Исходное изображение |
-| `scale` | `number?` | Коэффициент (MVP: 4) |
+| `scale` | `number?` | AI коэффициент (MVP: ровно 4) |
+| `target_width` | `integer?` | Точная целевая ширина; должна быть input width × 4 |
+| `target_height` | `integer?` | Точная целевая высота; должна быть input height × 4 |
+
+Target dimensions не вызывают последующий resize: принимаются только точные размеры, создаваемые x4 моделью. Успешный ответ содержит `timings.total_ms` и `timings.upscale_ms`.
 
 ---
 

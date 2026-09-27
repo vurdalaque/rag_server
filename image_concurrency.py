@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -14,11 +13,13 @@ _vlm_semaphore: asyncio.Semaphore | None = None
 
 
 def _comfy_limit() -> int:
-    return max(1, env_int("IMAGE_COMFY_MAX_CONCURRENT", 4))
+    legacy = env_int("IMAGE_COMFY_MAX_CONCURRENT", 4)
+    return max(1, env_int("COMFYUI_CONCURRENCY_LIMIT", legacy))
 
 
 def _vlm_limit() -> int:
-    return max(1, env_int("IMAGE_VLM_MAX_CONCURRENT", 8))
+    legacy = env_int("IMAGE_VLM_MAX_CONCURRENT", 8)
+    return max(1, env_int("SGLANG_CONCURRENCY_LIMIT", legacy))
 
 
 def _comfy_sem() -> asyncio.Semaphore:

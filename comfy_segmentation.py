@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from io import BytesIO
@@ -74,41 +75,41 @@ def _image_size(data: bytes) -> tuple[int, int]:
         return image.size
 
 
-def _parse_best_bbox(node_output: dict[str, Any]) -> SegmentBox | None:
-    """Parse highest-confidence bbox from Comfy detect node output."""
+def _parse_best_bbox(
+    node_output: dict[str, Any],
+    width: int,
+    height: int,
+) -> tuple[SegmentBox, float] | None:
+    """Parse the top-scoring Grounding DINO box and its confidence."""
     candidates: list[tuple[float, SegmentBox]] = []
-
     raw_bboxes = node_output.get("bboxes") or node_output.get("BBOX")
     raw_scores = node_output.get("scores") or node_output.get("confidences")
 
-    if isinstance(raw_bboxes, list) and raw_bboxes:
+    if isinstance(raw_bboxes, list):
         for index, item in enumerate(raw_bboxes):
-            score = 1.0
-            if isinstance(raw_scores, list) and index < len(raw_scores):
-                try:
+            try:
+                if isinstance(raw_scores, list) and index < len(raw_scores):
                     score = float(raw_scores[index])
-                except (TypeError, ValueError):
-                    score = 1.0
-            if isinstance(item, (list, tuple)) and len(item) >= 4:
-                x1, y1, x2, y2 = (float(v) for v in item[:4])
-                width_hint = max(x2, 1.0)
-                height_hint = max(y2, 1.0)
-                candidates.append(
-                    (
-                        score,
-                        SegmentBox(
-                            x1=x1 / width_hint if x1 > 1 else x1,
-                            y1=y1 / height_hint if y1 > 1 else y1,
-                            x2=x2 / width_hint if x2 > 1 else x2,
-                            y2=y2 / height_hint if y2 > 1 else y2,
-                        ),
-                    ),
+                else:
+                    score = 0.0
+                if not math.isfinite(score):
+                    score = 0.0
+                if not isinstance(item, (list, tuple)) or len(item) < 4:
+                    continue
+                values = [float(value) for value in item[:4]]
+                box = _normalize_pixel_bbox(
+                    SegmentBox(x1=values[0], y1=values[1], x2=values[2], y2=values[3]),
+                    width,
+                    height,
                 )
+            except (TypeError, ValueError):
+                continue
+            candidates.append((score, box))
 
     if not candidates:
         return None
-    candidates.sort(key=lambda pair: pair[0], reverse=True)
-    return candidates[0][1]
+    score, box = max(candidates, key=lambda candidate: candidate[0])
+    return box, score
 
 
 def _normalize_pixel_bbox(box: SegmentBox, width: int, height: int) -> SegmentBox:
@@ -188,11 +189,16 @@ class ComfyImageSegmenter:
             return False
 
         text_ok = False
+        grounding_loader = object_info.get(self._config.grounding_loader_class)
         if (
-            self._config.grounding_loader_class in object_info
+            isinstance(grounding_loader, dict)
             and self._config.grounding_detect_class in object_info
         ):
-            text_ok = True
+            required_inputs = grounding_loader.get("input", {}).get("required", {})
+            model_options = _combo_options(
+                required_inputs.get("model_name") or required_inputs.get("model")
+            )
+            text_ok = self._config.grounding_model_name in model_options
 
         self._text_supported = text_ok
         self._modes = {
@@ -248,13 +254,21 @@ class ComfyImageSegmenter:
                 )
             detect_ms = elapsed_ms(t0)
             node_output = client.extract_node_outputs(history, prompt_id, "detect")
-            parsed = _parse_best_bbox(node_output)
+            parsed = _parse_best_bbox(node_output, width, height)
             if parsed is None:
                 raise NotFoundError(
                     "no object matched the text prompt",
                     prompt=request.prompt.strip(),
+                    threshold=self._config.grounding_threshold,
                 )
-            box = _normalize_pixel_bbox(parsed, width, height)
+            box, score = parsed
+            if score < self._config.grounding_threshold:
+                raise NotFoundError(
+                    "best object match is below the configured confidence threshold",
+                    prompt=request.prompt.strip(),
+                    score=score,
+                    threshold=self._config.grounding_threshold,
+                )
 
         if box is None and not request.points:
             raise NotFoundError("segmentation input did not resolve to a region")

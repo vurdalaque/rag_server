@@ -22,6 +22,7 @@ from image_generation import GenerateImageRequest
 from image_mcp_backends import ImageMcpBackends
 from image_mcp_capabilities import build_platform_capabilities_payload
 from image_mcp_ops import register_image_ops_tools
+from image_timings import attach_total, elapsed_ms
 from image_generation_errors import (
     ImageGenerationError,
     InternalImageGenerationError,
@@ -365,6 +366,7 @@ def register_image_tools(
         ctx: Context,
     ) -> Annotated[CallToolResult, GenerateImageStructuredOutput]:
         """Registered via ``add_tool``; see ``GENERATE_IMAGE_TOOL_DESCRIPTION``."""
+        tool_started = time.monotonic()
         if _backends is None or _backends.generation is None:
             logger.warning("generate_image rejected: image backend not registered")
             return CallToolResult(
@@ -514,7 +516,7 @@ def register_image_tools(
             prompt_id=result.prompt_id,
             image_count=len(result.images),
             artifacts=artifact_refs,
-            timings=result.timings,
+            timings=attach_total(result.timings, elapsed_ms(tool_started)),
         )
 
         tool_result = CallToolResult(
@@ -545,29 +547,7 @@ def register_image_tools(
         """
         Report server image-generation limits, defaults, and sampler metadata.
         """
-        if _backends is None or not _backends.any_available():
-            return CallToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "error": {
-                                    "code": "backend_unavailable",
-                                    "message": (
-                                        "image capabilities are not available "
-                                        "on this server"
-                                    ),
-                                }
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                ],
-                is_error=True,
-            )
-
-        payload = await build_platform_capabilities_payload(_backends)
+        payload = await build_platform_capabilities_payload(_backends or ImageMcpBackends())
         structured = capabilities_from_backend(payload)
         return CallToolResult(
             content=[],
@@ -589,9 +569,8 @@ def register_image_tools(
         registered_names=_registered_tool_names,
     )
 
-    if backends.any_available():
-        mcp.add_tool(image_generation_capabilities)
-        _registered_tool_names.append("image_generation_capabilities")
+    mcp.add_tool(image_generation_capabilities)
+    _registered_tool_names.append("image_generation_capabilities")
 
     _registered = bool(_registered_tool_names)
     logger.info(

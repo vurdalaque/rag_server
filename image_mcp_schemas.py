@@ -89,7 +89,7 @@ GENERATE_IMAGE_TOOL_DESCRIPTION = (
     "Generate one or more images from a text prompt with optional visual inputs: "
     "reference images (visual references / WHAT), sketch (composition and layout / HOW), "
     "and mask (soft spatial edit-region guidance / WHERE). "
-    "Returns MCP image content blocks; metadata is in structured output (seed, timings)."
+    "Returns compact structured metadata with artifact IDs; image bytes are downloaded separately."
 )
 
 _REFERENCE_IMAGES_FIELD_DESCRIPTION = (
@@ -225,11 +225,21 @@ class UpscaleImageInput(BaseModel):
         default=None,
         description="Upscale factor (MVP supports 4). Defaults to server capability.",
     )
+    target_width: int | None = Field(
+        default=None,
+        description="Optional exact output width; must equal the input width multiplied by the supported AI scale.",
+    )
+    target_height: int | None = Field(
+        default=None,
+        description="Optional exact output height; must equal the input height multiplied by the supported AI scale.",
+    )
 
 
 UPSCALE_IMAGE_TOOL_DESCRIPTION = (
     "Neural super-resolution upscale (not ordinary geometric resize). "
-    "MVP supports scale=4 via the configured upscale model."
+    "MVP supports scale=4 via the configured upscale model. Optional target dimensions "
+    "must exactly match the source dimensions multiplied by the supported AI scale; "
+    "no geometric resize fallback is performed."
 )
 
 SEGMENT_IMAGE_TOOL_DESCRIPTION = (

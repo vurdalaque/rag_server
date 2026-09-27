@@ -56,7 +56,8 @@ def test_llm_analyzer_strips_multimodal_response() -> None:
         )
 
     assert result.text == "red sphere on gray background"
-    assert "llm" in result.timings
+    assert result.timings["total_ms"] >= 0
+    assert result.timings["analyze_ms"] >= 0
     chat.assert_awaited_once()
     messages = chat.await_args.args[0]
     assert messages[0]["role"] == "system"

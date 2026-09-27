@@ -469,7 +469,7 @@ async def upstream_stream(
 
 
 async def init_image_generation() -> None:
-    """Probe backends and register image MCP tools when available."""
+    """Probe image backends and register tools with explicit unavailable states."""
     global image_backend
 
     from image_analysis import LlmImageAnalyzer, probe as probe_image_analysis
@@ -494,8 +494,7 @@ async def init_image_generation() -> None:
         segmenter=segmenter,
         upscaler=upscaler,
     )
-    if backends.any_available():
-        register_image_mcp_backends(mcp, backends)
+    register_image_mcp_backends(mcp, backends)
 
     from rag_metrics import set_image_generation_enabled
 

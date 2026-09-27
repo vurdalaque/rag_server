@@ -181,7 +181,19 @@ def test_mcp_legacy_initialize_and_tools_list(mcp_client: TestClient) -> None:
         "web_search",
         "ask_project",
         "ping",
+        "image_generation_capabilities",
+        "upscale_image",
     }
+    capabilities = mcp_client.post(
+        "/mcp/",
+        json={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+            "name": "image_generation_capabilities", "arguments": {}
+        }},
+        headers=session_headers,
+    ).json()["result"]["structuredContent"]
+    assert capabilities["max_images"] == 0
+    assert capabilities["segmentation"]["supported"] is False
+    assert capabilities["upscale"]["supported"] is False
 
 
 def test_mcp_lifecycle_logs_response_without_base64(caplog: pytest.LogCaptureFixture) -> None:

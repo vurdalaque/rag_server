@@ -117,7 +117,8 @@ def test_list_mcp_tool_names_with_image_tools() -> None:
     register_image_tools(server, backend)
 
     names = list_mcp_tool_names(include_image_tools=True)
-    assert names[-len(GENERATION_MCP_TOOL_NAMES) :] == list(GENERATION_MCP_TOOL_NAMES)
+    assert set(GENERATION_MCP_TOOL_NAMES) <= set(names)
+    assert "upscale_image" in names
 
 
 def test_register_image_tools_adds_tools_when_backend_available() -> None:
@@ -135,7 +136,7 @@ def test_register_image_tools_adds_tools_when_backend_available() -> None:
 
     tools = asyncio.run(server.list_tools())
     tool_names = {tool.name for tool in tools}
-    assert tool_names == set(GENERATION_MCP_TOOL_NAMES)
+    assert tool_names == set(GENERATION_MCP_TOOL_NAMES) | {"upscale_image"}
 
 
 def test_register_image_tools_is_idempotent() -> None:
@@ -147,7 +148,8 @@ def test_register_image_tools_is_idempotent() -> None:
     register_image_tools(server, backend)
 
     tools = asyncio.run(server.list_tools())
-    assert len(tools) == len(GENERATION_MCP_TOOL_NAMES)
+    assert len(tools) == len(GENERATION_MCP_TOOL_NAMES) + 1
+    assert "upscale_image" in {tool.name for tool in tools}
     generate_tool = next(tool for tool in tools if tool.name == "generate_image")
     assert "mask" in generate_tool.input_schema.get("properties", {})
     assert "sketch" in generate_tool.input_schema.get("properties", {})
@@ -167,6 +169,25 @@ def test_generate_image_tool_returns_error_without_backend() -> None:
     assert result.is_error is True
     text = next(block for block in result.content if block.type == "text")
     assert json.loads(text.text)["error"]["code"] == "backend_unavailable"
+
+
+def test_upscale_tool_stays_visible_and_reports_unavailable_backend() -> None:
+    from image_mcp_backends import ImageMcpBackends
+    from test_image_contract import _png_b64
+
+    server = MCPServer("image-test-upscale-unavailable")
+    register_image_tools(server, None, backends=ImageMcpBackends())
+    tools = asyncio.run(server.list_tools())
+    assert "upscale_image" in {tool.name for tool in tools}
+
+    capabilities = asyncio.run(server.call_tool("image_generation_capabilities", {}))
+    assert capabilities.structured_content["upscale"]["supported"] is False
+    result = asyncio.run(
+        server.call_tool("upscale_image", {"image": _png_b64(), "scale": 4})
+    )
+    assert result.is_error is True
+    error = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert error["error"]["code"] == "backend_unavailable"
 
 
 def test_capabilities_tool_delegates_to_backend() -> None:
@@ -232,7 +253,7 @@ def test_generate_image_success_structured_output_and_images() -> None:
             ],
             seed=42,
             prompt_id="prompt-1",
-            timings={"comfy_execute": 1.25},
+            timings={"generate_ms": 1250.0},
         )
     )
     register_image_tools(server, backend)
@@ -247,6 +268,8 @@ def test_generate_image_success_structured_output_and_images() -> None:
     assert "data" not in result.structured_content
     assert result.structured_content["seed"] == 42
     assert result.structured_content["image_count"] == 2
+    assert result.structured_content["timings"]["total_ms"] >= 0
+    assert result.structured_content["timings"]["generate_ms"] == 1250.0
     artifacts = result.structured_content["artifacts"]
     assert [artifact["artifact_id"] for artifact in artifacts] == ["prompt-1_0", "prompt-1_1"]
     assert all(artifact["mime_type"] == "image/png" for artifact in artifacts)

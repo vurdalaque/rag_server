@@ -51,7 +51,7 @@ def _mock_analyzer_backend() -> MagicMock:
     backend = MagicMock()
     backend.probe = AsyncMock(return_value=True)
     backend.analyze = AsyncMock(
-        return_value=AnalysisResult(text="deterministic analysis", timings={"llm": 0.01}),
+        return_value=AnalysisResult(text="deterministic analysis", timings={"analyze_ms": 10.0, "total_ms": 10.0}),
     )
     return backend
 
@@ -80,13 +80,20 @@ def _mock_upscaler_backend() -> MagicMock:
     png = base64.b64decode(_png_b64((16, 16)))
     backend = MagicMock()
     backend.probe = AsyncMock(return_value=True)
-    backend.capabilities = AsyncMock(return_value={"default_scale": 2.0, "max_scale": 4.0})
+    backend.capabilities = AsyncMock(
+        return_value={
+            "default_scale": 4.0,
+            "min_scale": 4.0,
+            "max_scale": 4.0,
+            "supports_target_dimensions": True,
+        }
+    )
     backend.upscale = AsyncMock(
         return_value=UpscaleResult(
             image=png,
             width=32,
             height=32,
-            timings={"upscale": 0.02},
+            timings={"upscale_ms": 20.0, "total_ms": 20.0},
         ),
     )
     return backend
@@ -225,7 +232,7 @@ def test_upscale_image_input_schema_required_and_optional(
 
     assert schema.get("required") == ["image"]
     assert "image" in properties
-    for optional in ("scale",):
+    for optional in ("scale", "target_width", "target_height"):
         assert optional in properties
         assert optional not in (schema.get("required") or [])
     assert "sketch" not in properties
@@ -278,6 +285,8 @@ def test_analyze_image_delegates_to_analyzer_backend(
         ),
     )
     assert result.is_error is not True
+    assert result.structured_content["timings"]["total_ms"] >= 0
+    assert result.structured_content["timings"]["analyze_ms"] >= 0
     backends.analyzer.analyze.assert_awaited_once()
 
 
@@ -293,6 +302,7 @@ def test_segment_image_delegates_to_segmenter_backend(
         ),
     )
     assert result.is_error is not True
+    assert result.structured_content["timings"]["total_ms"] >= 0
     backends.segmenter.segment.assert_awaited_once()
     request = backends.segmenter.segment.await_args.args[0]
     assert isinstance(request, SegmentRequest)
@@ -302,12 +312,22 @@ def test_upscale_image_delegates_to_upscaler_backend(
     ops_mcp_server: tuple[MCPServer, ImageMcpBackends],
 ) -> None:
     server, backends = ops_mcp_server
-    encoded = _png_b64()
+    encoded = _png_b64((16, 16))
     result = asyncio.run(
         server.call_tool(
             "upscale_image",
-            {"image": encoded, "scale": 2.0},
+            {
+                "image": encoded,
+                "scale": 4.0,
+                "target_width": 64,
+                "target_height": 64,
+            },
         ),
     )
     assert result.is_error is not True
+    assert result.structured_content["timings"]["total_ms"] >= 0
+    request = backends.upscaler.upscale.await_args.args[0]
+    assert request.scale == 4.0
+    assert request.target_width == 64
+    assert request.target_height == 64
     backends.upscaler.upscale.assert_awaited_once()

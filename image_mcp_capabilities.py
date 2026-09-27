@@ -103,8 +103,8 @@ async def build_platform_capabilities_payload(
         "max_output_bytes": upscale_cfg.max_output_bytes,
         "max_input_dimension": upscale_cfg.max_input_dimension,
         "max_output_dimension": upscale_cfg.max_output_dimension,
-        "supports_scale_factor": True,
-        "supports_target_dimensions": True,
+        "supports_scale_factor": False,
+        "supports_target_dimensions": False,
     }
     if backends.upscaler is not None:
         try:
@@ -119,11 +119,6 @@ async def build_platform_capabilities_payload(
         "box": segmentation["modes"].get("box", False),
         "refinement": segmentation["modes"].get("mask_refinement", False),
     }
-    upscale_mvp = {
-        "supported": upscale.get("supported", False),
-        "scales": upscale.get("scales") or upscale.get("supported_scale_factors") or [],
-    }
-
     return {
         **generation,
         "analysis": analysis,

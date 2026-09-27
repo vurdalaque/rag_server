@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from typing import Annotated, Any, Callable
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import Field
 
-from image_analysis import LlmImageAnalyzer
 from image_generation_errors import (
+    BackendUnavailableError,
     ImageGenerationError,
     InvalidMaskImageError,
     InvalidReferenceImageError,
@@ -32,10 +33,17 @@ from image_reference import (
     decode_and_validate_reference_image,
 )
 from image_segmentation import SegmentBox, SegmentPoint, SegmentRequest
+from image_timings import elapsed_ms, attach_total
 from image_upscale import UpscaleRequest
 from rag_metrics import track_mcp_tool
 
 logger = logging.getLogger(__name__)
+
+
+class _UnavailableUpscaler:
+    async def upscale(self, _request: UpscaleRequest):
+        raise BackendUnavailableError("image upscaling is not available on this server")
+
 
 ErrorResultFn = Callable[[ImageGenerationError], CallToolResult]
 CoerceImageFn = Callable[[Any, str], str]
@@ -115,7 +123,7 @@ def register_image_ops_tools(
 ) -> None:
     analyzer = backends.analyzer
     segmenter = backends.segmenter
-    upscaler = backends.upscaler
+    upscaler = backends.upscaler or _UnavailableUpscaler()
 
     if analyzer is not None:
 
@@ -138,6 +146,7 @@ def register_image_ops_tools(
                 ),
             ] = None,
         ) -> Annotated[CallToolResult, AnalyzeImageStructuredOutput]:
+            started = time.monotonic()
             decoded: list[bytes] = []
             mime_types: list[str] = []
             try:
@@ -163,7 +172,7 @@ def register_image_ops_tools(
 
             structured = AnalyzeImageStructuredOutput(
                 image_count=len(decoded),
-                timings=result.timings,
+                timings=attach_total(result.timings, elapsed_ms(started)),
             )
             return CallToolResult(
                 content=[TextContent(type="text", text=result.text)],
@@ -206,6 +215,7 @@ def register_image_ops_tools(
                 Field(default=None, description="Optional mask PNG for point refinement."),
             ] = None,
         ) -> Annotated[CallToolResult, SegmentImageStructuredOutput]:
+            started = time.monotonic()
             try:
                 image_bytes = decode_and_validate_reference_image(
                     coerce_image(image, field="image"),
@@ -252,7 +262,7 @@ def register_image_ops_tools(
             structured = SegmentImageStructuredOutput(
                 width=width,
                 height=height,
-                timings=timings,
+                timings=attach_total(timings, elapsed_ms(started)),
             )
             return CallToolResult(
                 content=[
@@ -275,9 +285,18 @@ def register_image_ops_tools(
             image: Annotated[str, Field(description="Source image as base64.")],
             scale: Annotated[
                 float | None,
-                Field(default=None, description="Upscale factor."),
+                Field(default=None, description="Upscale factor (MVP supports 4)."),
+            ] = None,
+            target_width: Annotated[
+                int | None,
+                Field(default=None, description="Optional exact output width; must equal input width times the supported AI scale."),
+            ] = None,
+            target_height: Annotated[
+                int | None,
+                Field(default=None, description="Optional exact output height; must equal input height times the supported AI scale."),
             ] = None,
         ) -> Annotated[CallToolResult, UpscaleImageStructuredOutput]:
+            started = time.monotonic()
             try:
                 image_bytes = decode_and_validate_reference_image(
                     coerce_image(image, field="image"),
@@ -286,6 +305,8 @@ def register_image_ops_tools(
                 request = UpscaleRequest(
                     image=image_bytes,
                     scale=scale,
+                    target_width=target_width,
+                    target_height=target_height,
                 )
             except (InvalidReferenceImageError, InvalidRequestError) as error:
                 return error_result(error)
@@ -301,7 +322,7 @@ def register_image_ops_tools(
             structured = UpscaleImageStructuredOutput(
                 width=result.width,
                 height=result.height,
-                timings=result.timings,
+                timings=attach_total(result.timings, elapsed_ms(started)),
             )
             return CallToolResult(
                 content=[

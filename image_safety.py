@@ -23,6 +23,7 @@ from typing import Any, Literal
 
 import httpx
 
+from image_concurrency import vlm_slot
 from llm_client import multimodal_chat
 from llm_params import env_bool
 
@@ -156,12 +157,13 @@ class ImageSafetyValidator:
 
         messages = build_safety_messages(prompt, images)
         try:
-            raw = await multimodal_chat(
-                messages,
-                thinking=False,
-                response_format={"type": "json_object"},
-                client=client,
-            )
+            async with vlm_slot():
+                raw = await multimodal_chat(
+                    messages,
+                    thinking=False,
+                    response_format={"type": "json_object"},
+                    client=client,
+                )
             return _result_from_parsed(_parse_validator_json(raw))
         except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
             logger.warning("image safety validator error: %s", exc.__class__.__name__)

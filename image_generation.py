@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -12,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 import comfy_workflow
 from comfy_client import ComfyUIClient
 from image_generation_config import ImageGenerationConfig, load_image_generation_config
+from image_concurrency import comfy_gpu_slot
 from image_generation_errors import (
     ImageGenerationError,
     InvalidRequestError,
@@ -24,6 +26,7 @@ from image_reference import (
     reference_sha256,
 )
 from image_safety import ImageSafetyValidator, SafetyImage
+from image_timings import elapsed_ms, merge_timings_ms
 from rag_metrics import record_image_generation, track_image_stage
 
 logger = logging.getLogger(__name__)
@@ -297,6 +300,7 @@ class ComfyUIBackend:
         self,
         request: GenerateImageRequest,
     ) -> ImageGenerationResult:
+        total_started = time.monotonic()
         validated = self._validate_request(request)
         client = self._client_instance()
         safety = self._safety_validator()
@@ -359,6 +363,7 @@ class ComfyUIBackend:
             self._config.comfyui_output_root,
         )
 
+        comfy_started = time.monotonic()
         with track_image_stage("comfy_execute"):
             for _ in range(validated.image_count):
                 request_id = str(uuid.uuid4())
@@ -384,11 +389,12 @@ class ComfyUIBackend:
                 workflow = built.workflow
                 seed_used = built.seed_used
 
-                raw_images = await client.run_workflow(
-                    workflow,
-                    request_id=request_id,
-                    timeout=self._config.generate_timeout,
-                )
+                async with comfy_gpu_slot():
+                    raw_images = await client.run_workflow(
+                        workflow,
+                        request_id=request_id,
+                        timeout=self._config.generate_timeout,
+                    )
                 if raw_images:
                     last_prompt_id = str(raw_images[0].get("prompt_id") or request_id)
 
@@ -431,7 +437,10 @@ class ComfyUIBackend:
             images=generated,
             seed=seed_used,
             prompt_id=last_prompt_id,
-            timings={},
+            timings=merge_timings_ms(
+                total=elapsed_ms(total_started),
+                generate=elapsed_ms(comfy_started),
+            ),
         )
 
     async def recover_generated_image(

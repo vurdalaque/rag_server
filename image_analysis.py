@@ -22,6 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from image_concurrency import vlm_slot
 from image_generation_errors import (
     AnalysisFailedError,
     BackendUnavailableError,
@@ -32,6 +33,7 @@ from image_generation_errors import (
     UnsupportedMimeTypeError,
 )
 from llm_client import LLM_URL, multimodal_chat
+from image_timings import elapsed_ms, merge_timings_ms
 from llm_params import env_bool, env_float, env_int
 from rag_metrics import probe_llm
 
@@ -296,13 +298,14 @@ class LlmImageAnalyzer:
         )
         messages = build_analysis_messages(analysis_images, instruction)
 
-        start = time.perf_counter()
+        start = time.monotonic()
         try:
-            text = await multimodal_chat(
-                messages,
-                thinking=False,
-                timeout=self._config.timeout,
-            )
+            async with vlm_slot():
+                text = await multimodal_chat(
+                    messages,
+                    thinking=False,
+                    timeout=self._config.timeout,
+                )
         except httpx.HTTPError as error:
             logger.warning("image analysis LLM HTTP error: %s", error.__class__.__name__)
             raise BackendUnavailableError(
@@ -324,14 +327,14 @@ class LlmImageAnalyzer:
                 reason=error.__class__.__name__,
             ) from error
 
-        elapsed = time.perf_counter() - start
+        elapsed = elapsed_ms(start)
         cleaned = text.strip()
         if not cleaned:
             raise AnalysisFailedError("image analysis returned empty text")
 
         return AnalysisResult(
             text=cleaned,
-            timings={"llm": elapsed},
+            timings=merge_timings_ms(total=elapsed, analyze=elapsed),
         )
 
 
