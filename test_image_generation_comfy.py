@@ -13,6 +13,7 @@ import comfy_client
 import comfy_workflow
 from comfy_client import ComfyUIClient
 from image_generation_config import _DEFAULT_TEMPLATE, ImageGenerationConfig
+from image_generation import ComfyUIBackend
 from comfy_workflow import (
     WorkflowBuildParams,
     build_image_workflow,
@@ -802,3 +803,52 @@ def test_wait_terminal_cancelled_cleans_up_ws_task(config: ImageGenerationConfig
                     )
 
     asyncio.run(_run())
+
+
+def test_recover_generated_image_uses_completed_history_without_resubmitting(
+    config: ImageGenerationConfig,
+) -> None:
+    prompt_id = "recover-prompt-1"
+    image_bytes = b"\x89PNG\r\n\x1a\nrecovered"
+    history = {
+        prompt_id: {
+            "outputs": {
+                "7": {
+                    "images": [
+                        {"filename": "result.png", "subfolder": "mcp/job", "type": "output"},
+                    ],
+                },
+            },
+        },
+    }
+    client = ComfyUIClient(config, http_client=AsyncMock())
+    client.fetch_history = AsyncMock(return_value=history)
+    client.fetch_output_bytes = AsyncMock(return_value=image_bytes)
+    backend = ComfyUIBackend(config, client=client)
+
+    image, state = asyncio.run(backend.recover_generated_image(prompt_id, 0))
+
+    assert state == "success"
+    assert image is not None
+    assert image.data == image_bytes
+    assert image.prompt_id == prompt_id
+    client.fetch_history.assert_awaited_once_with(prompt_id)
+    client.fetch_output_bytes.assert_awaited_once()
+
+
+def test_recover_generated_image_reports_pending_without_resubmitting(
+    config: ImageGenerationConfig,
+) -> None:
+    prompt_id = "pending-prompt-1"
+    client = ComfyUIClient(config, http_client=AsyncMock())
+    client.fetch_history = AsyncMock(
+        return_value={prompt_id: {"status": {"status_str": "running"}, "outputs": {}}}
+    )
+    client.fetch_output_bytes = AsyncMock()
+    backend = ComfyUIBackend(config, client=client)
+
+    image, state = asyncio.run(backend.recover_generated_image(prompt_id, 0))
+
+    assert image is None
+    assert state == "pending"
+    client.fetch_output_bytes.assert_not_awaited()
