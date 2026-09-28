@@ -379,7 +379,7 @@ Read-only multimodal анализ: описание, сравнение before/a
 | `box` | `object?` | `{x1,y1,x2,y2}` нормализованный bbox |
 | `mask` | `string?` | Существующая маска (только вместе с `points` для refinement) |
 
-Успешный ответ содержит `timings.total_ms`; для text mode дополнительно `detect_ms` и `segment_ms`. Все timing-поля измеряются в миллисекундах. Grounding DINO, затем SAM2 выполняются последовательно; spatial prompts обходят DINO.
+Успешный ответ содержит `timings.total_ms`; для text mode дополнительно `detect_ms` и `segment_ms`. Все timing-поля измеряются в миллисекундах. Text mode выполняет один Grounding DINO detect, затем преобразует top-1 bbox в pixel-space для SAM2; spatial box/point prompts обходят DINO. При отсутствии bbox SAM2 не запускается.
 
 ---
 

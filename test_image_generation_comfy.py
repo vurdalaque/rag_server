@@ -805,6 +805,19 @@ def test_wait_terminal_cancelled_cleans_up_ws_task(config: ImageGenerationConfig
     asyncio.run(_run())
 
 
+def test_ws_node_output_consumption_preserves_other_nodes(config: ImageGenerationConfig) -> None:
+    client = ComfyUIClient(config, http_client=AsyncMock())
+    client._ws_node_outputs["prompt-1"] = {
+        "preview_detections": {"text": ["label=chair score=0.9 bbox=[1,2,3,4]"]},
+    }
+
+    assert client.consume_websocket_node_output("prompt-1", "detect") == {}
+    assert client.consume_websocket_node_output("prompt-1", "preview_detections") == {
+        "text": ["label=chair score=0.9 bbox=[1,2,3,4]"]
+    }
+    assert "prompt-1" not in client._ws_node_outputs
+
+
 def test_recover_generated_image_uses_completed_history_without_resubmitting(
     config: ImageGenerationConfig,
 ) -> None:
