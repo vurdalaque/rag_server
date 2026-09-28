@@ -23,7 +23,10 @@ class ImageSegmentationConfig:
     max_bytes: int
     max_dimension: int
     grounding_threshold: float
+    grounding_text_threshold: float
     grounding_model_name: str
+    grounding_precision: str
+    grounding_device: str
     grounding_loader_class: str
     grounding_detect_class: str
     sam2_model: str
@@ -41,18 +44,18 @@ def load_image_segmentation_config() -> ImageSegmentationConfig:
         segment_timeout=_env_float("IMAGE_SEGMENTATION_TIMEOUT", 600.0),
         max_bytes=max(1, env_int("IMAGE_SEGMENTATION_MAX_BYTES", 10 * 1024 * 1024)),
         max_dimension=max(1, env_int("IMAGE_SEGMENTATION_MAX_DIMENSION", 8192)),
-        grounding_threshold=_env_float("IMAGE_GROUNDING_THRESHOLD", 0.3),
-        grounding_model_name=os.getenv(
-            "IMAGE_GROUNDING_MODEL_NAME",
-            "GroundingDINO: SwinT OGC",
-        ).strip(),
+        grounding_threshold=_env_float("IMAGE_GROUNDING_THRESHOLD", 0.30),
+        grounding_text_threshold=_env_float("IMAGE_GROUNDING_TEXT_THRESHOLD", 0.25),
+        grounding_model_name=os.getenv("IMAGE_GROUNDING_MODEL_NAME", "tiny").strip(),
+        grounding_precision=os.getenv("IMAGE_GROUNDING_PRECISION", "bf16").strip(),
+        grounding_device=os.getenv("IMAGE_GROUNDING_DEVICE", "cuda").strip(),
         grounding_loader_class=os.getenv(
             "IMAGE_GROUNDING_LOADER_CLASS",
-            "GroundingModelLoader",
+            "GroundingDINOLoader",
         ).strip(),
         grounding_detect_class=os.getenv(
             "IMAGE_GROUNDING_DETECT_CLASS",
-            "GroundingDetector",
+            "GroundingDINODetect",
         ).strip(),
         sam2_model=os.getenv(
             "IMAGE_SAM2_MODEL",

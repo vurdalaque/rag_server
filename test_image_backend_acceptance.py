@@ -12,7 +12,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from image_segmentation import create_comfy_segmenter_if_ready
-from image_generation_errors import NotFoundError
+from image_generation_errors import ImageGenerationError, NotFoundError
 from image_segmentation_types import SegmentBox, SegmentRequest
 from image_upscale import create_upscale_backend_if_ready, UpscaleRequest
 from test_image_contract import _png_b64
@@ -27,12 +27,37 @@ def _sample_png(size: int = 128) -> bytes:
 def _schema_png(size: int = 512) -> bytes:
     image = Image.new("RGB", (size, size), color="white")
     draw = ImageDraw.Draw(image)
-    draw.rectangle((50, 60, 210, 180), outline="black", width=6)
-    draw.rectangle((280, 300, 450, 430), outline="black", width=6)
-    draw.line((210, 120, 280, 365), fill="black", width=5)
+    draw.rounded_rectangle((20, 190, 150, 310), radius=16, outline="black", width=5)
+    draw.text((55, 245), "START", fill="black")
+    draw.rectangle((190, 190, 320, 310), outline="black", width=5)
+    draw.text((220, 245), "PROCESS", fill="black")
+    draw.rounded_rectangle((360, 190, 490, 310), radius=16, outline="black", width=5)
+    draw.text((400, 245), "END", fill="black")
+    draw.line((150, 250, 190, 250), fill="black", width=5)
+    draw.line((320, 250, 360, 250), fill="black", width=5)
+    draw.polygon([(185, 243), (197, 250), (185, 257)], fill="black")
+    draw.polygon([(355, 243), (367, 250), (355, 257)], fill="black")
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _blank_png(size: int = 512) -> bytes:
+    image = Image.new("RGB", (size, size), color="white")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _run_live_segment(coro):
+    try:
+        return asyncio.run(coro)
+    except ImageGenerationError as error:
+        print(
+            "live Comfy segmentation error "
+            f"code={error.code} details={error.details}"
+        )
+        raise
 
 
 @pytest.mark.acceptance
@@ -42,7 +67,7 @@ def test_live_comfy_segment_box() -> None:
     assert segmenter is not None
 
     started = time.monotonic()
-    mask_bytes = asyncio.run(
+    mask_bytes = _run_live_segment(
         segmenter.segment(
             SegmentRequest(
                 image=_sample_png(128),
@@ -60,22 +85,24 @@ def test_live_comfy_segment_box() -> None:
 
 @pytest.mark.acceptance
 @pytest.mark.skipif(not COMFY_URL, reason="COMFYUI_URL not set")
-def test_live_comfy_text_schema_found_and_person_not_found() -> None:
+def test_live_comfy_text_selection_and_no_detection_error_mapping() -> None:
     segmenter = asyncio.run(create_comfy_segmenter_if_ready())
     assert segmenter is not None
     capabilities = asyncio.run(segmenter.capabilities())
     assert capabilities["modes"]["text"] is True
     schema_image = _schema_png()
 
-    mask = asyncio.run(
-        segmenter.segment(SegmentRequest(image=schema_image, prompt="schema"))
+    mask = _run_live_segment(
+        segmenter.segment(SegmentRequest(image=schema_image, prompt="rectangle"))
     )
     with Image.open(BytesIO(mask)) as output_mask:
         assert output_mask.size == (512, 512)
 
     with pytest.raises(NotFoundError):
         asyncio.run(
-            segmenter.segment(SegmentRequest(image=schema_image, prompt="person"))
+            segmenter.segment(
+                SegmentRequest(image=_blank_png(), prompt="person")
+            )
         )
 
 

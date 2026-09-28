@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 import uuid
 from io import BytesIO
@@ -18,6 +19,7 @@ from comfy_workflow import _combo_options
 from image_concurrency import comfy_gpu_slot
 from image_generation_config import ImageGenerationConfig
 from image_generation_errors import (
+    ExecutionFailedError,
     ImageGenerationError,
     NotFoundError,
     SegmentationFailedError,
@@ -37,6 +39,10 @@ from image_timings import elapsed_ms, merge_timings_ms
 from image_upscale_config import comfy_generation_config_for_upscale, load_image_upscale_config
 
 logger = logging.getLogger(__name__)
+_DINO_TEXT_DETECTION_PATTERN = re.compile(
+    r"score\s*=\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s+"
+    r"bbox\s*=\s*\[([^\]]+)\]"
+)
 
 
 def _pixel_points(
@@ -67,6 +73,26 @@ def _pixel_bbox(box: SegmentBox, width: int, height: int) -> list[float]:
     ]
 
 
+def _box_point_prompts(box: SegmentBox) -> tuple[tuple[SegmentPoint, ...], tuple[SegmentPoint, ...]]:
+    """Represent a literal box with direct SAM2 foreground/background prompts."""
+    center_x = (box.x1 + box.x2) / 2.0
+    center_y = (box.y1 + box.y2) / 2.0
+    positive = (SegmentPoint(center_x, center_y, "include"),)
+    margin = 0.01
+    candidates = (
+        (box.x1 - margin, center_y),
+        (box.x2 + margin, center_y),
+        (center_x, box.y1 - margin),
+        (center_x, box.y2 + margin),
+    )
+    negative = tuple(
+        SegmentPoint(x, y, "exclude")
+        for x, y in candidates
+        if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0
+    )
+    return positive, negative
+
+
 def _image_size(data: bytes) -> tuple[int, int]:
     from PIL import Image
 
@@ -75,24 +101,34 @@ def _image_size(data: bytes) -> tuple[int, int]:
         return image.size
 
 
+def _socket_type(inputs: dict[str, Any], name: str) -> str | None:
+    value = inputs.get(name)
+    if isinstance(value, (list, tuple)) and value and isinstance(value[0], str):
+        return value[0]
+    return None
+
+
 def _parse_best_bbox(
     node_output: dict[str, Any],
     width: int,
     height: int,
-) -> tuple[SegmentBox, float] | None:
-    """Parse the top-scoring Grounding DINO box and its confidence."""
-    candidates: list[tuple[float, SegmentBox]] = []
+) -> tuple[SegmentBox, float | None] | None:
+    """Parse the highest-confidence box when scores are present, else top-1 output."""
+    candidates: list[tuple[float | None, SegmentBox]] = []
     raw_bboxes = node_output.get("bboxes") or node_output.get("BBOX")
     raw_scores = node_output.get("scores") or node_output.get("confidences")
 
     if isinstance(raw_bboxes, list):
         for index, item in enumerate(raw_bboxes):
             try:
-                if isinstance(raw_scores, list) and index < len(raw_scores):
-                    score = float(raw_scores[index])
-                else:
-                    score = 0.0
-                if not math.isfinite(score):
+                raw_score = (
+                    raw_scores[index]
+                    if isinstance(raw_scores, list) and index < len(raw_scores)
+                    else item[4] if isinstance(item, (list, tuple)) and len(item) > 4
+                    else None
+                )
+                score = float(raw_score) if raw_score is not None else None
+                if score is not None and not math.isfinite(score):
                     score = 0.0
                 if not isinstance(item, (list, tuple)) or len(item) < 4:
                     continue
@@ -106,9 +142,31 @@ def _parse_best_bbox(
                 continue
             candidates.append((score, box))
 
+    raw_text = node_output.get("text") or node_output.get("detections")
+    text_blocks = [raw_text] if isinstance(raw_text, str) else raw_text
+    if isinstance(text_blocks, list):
+        for text in text_blocks:
+            if not isinstance(text, str):
+                continue
+            for match in _DINO_TEXT_DETECTION_PATTERN.finditer(text):
+                try:
+                    score = float(match.group(1))
+                    coords = [float(value.strip()) for value in match.group(2).split(",")]
+                    if len(coords) != 4 or not math.isfinite(score):
+                        continue
+                    box = _normalize_pixel_bbox(
+                        SegmentBox(x1=coords[0], y1=coords[1], x2=coords[2], y2=coords[3]),
+                        width,
+                        height,
+                    )
+                except (TypeError, ValueError):
+                    continue
+                candidates.append((score, box))
+
     if not candidates:
         return None
-    score, box = max(candidates, key=lambda candidate: candidate[0])
+    scored = [candidate for candidate in candidates if candidate[0] is not None]
+    score, box = max(scored, key=lambda candidate: candidate[0]) if scored else candidates[0]
     return box, score
 
 
@@ -178,36 +236,79 @@ class ComfyImageSegmenter:
             logger.warning("segmentation probe missing SAM2 workflow nodes")
             return False
 
-        loader = object_info.get(self._config.sam2_loader_class, {})
-        required_inputs = loader.get("input", {}).get("required", {})
-        models = _combo_options(required_inputs.get("model"))
-        if self._config.sam2_model not in models:
-            logger.warning(
-                "segmentation probe: SAM2 model %s not in Comfy combo",
-                self._config.sam2_model,
-            )
+        sam_loader = object_info.get(self._config.sam2_loader_class, {})
+        sam_required = (sam_loader.get("input") or {}).get("required") or {}
+        for field, configured in (
+            ("model", self._config.sam2_model),
+            ("segmentor", self._config.sam2_segmentor),
+            ("device", self._config.sam2_device),
+            ("precision", self._config.sam2_precision),
+        ):
+            options = _combo_options(sam_required.get(field))
+            if not options or configured not in options:
+                logger.warning("segmentation probe: configured SAM2 %s is unavailable", field)
+                return False
+
+        sam_loader_outputs = set(sam_loader.get("output") or [])
+        sam_segment = object_info.get(self._config.sam2_segment_class, {})
+        segment_schema = sam_segment.get("input") or {}
+        segment_required_schema = segment_schema.get("required") or {}
+        segment_required = set(segment_required_schema)
+        if (
+            "SAM2MODEL" not in sam_loader_outputs
+            or not {"sam2_model", "image", "keep_model_loaded"} <= segment_required
+            or _socket_type(segment_required_schema, "sam2_model") != "SAM2MODEL"
+            or _socket_type(segment_required_schema, "image") != "IMAGE"
+        ):
+            logger.warning("segmentation probe: SAM2 segment input schema is incomplete")
             return False
+        segment_inputs = dict(segment_required_schema)
+        segment_inputs.update(segment_schema.get("optional") or {})
+        if "MASK" not in set(sam_segment.get("output") or []):
+            logger.warning("segmentation probe: SAM2 node does not expose a mask output")
+            return False
+        points_ok = (
+            _socket_type(segment_inputs, "coordinates_positive") == "STRING"
+            and _socket_type(segment_inputs, "coordinates_negative") == "STRING"
+        )
+        box_ok = _socket_type(segment_inputs, "bboxes") == "BBOX"
+        mask_ok = _socket_type(segment_inputs, "mask") == "MASK" and points_ok
 
         text_ok = False
         grounding_loader = object_info.get(self._config.grounding_loader_class)
-        if (
-            isinstance(grounding_loader, dict)
-            and self._config.grounding_detect_class in object_info
-        ):
-            required_inputs = grounding_loader.get("input", {}).get("required", {})
-            model_options = _combo_options(
-                required_inputs.get("model_name") or required_inputs.get("model")
+        grounding_detect = object_info.get(self._config.grounding_detect_class)
+        if isinstance(grounding_loader, dict) and isinstance(grounding_detect, dict):
+            grounding_required = (grounding_loader.get("input") or {}).get("required") or {}
+            detect_required = (grounding_detect.get("input") or {}).get("required") or {}
+            detect_outputs = grounding_detect.get("output") or []
+            model_options = _combo_options(grounding_required.get("model"))
+            precision_options = _combo_options(grounding_required.get("precision"))
+            device_options = _combo_options(grounding_required.get("device"))
+            grounding_outputs = set(grounding_loader.get("output") or [])
+            text_ok = (
+                self._config.grounding_model_name in model_options
+                and self._config.grounding_precision in precision_options
+                and self._config.grounding_device in device_options
+                and "GROUNDING_DINO_MODEL" in grounding_outputs
+                and _socket_type(detect_required, "grounding_dino") == "GROUNDING_DINO_MODEL"
+                and _socket_type(detect_required, "image") == "IMAGE"
+                and _socket_type(detect_required, "text") == "STRING"
+                and _socket_type(detect_required, "box_threshold") == "FLOAT"
+                and _socket_type(detect_required, "text_threshold") == "FLOAT"
+                and "BBOX" in detect_outputs
+                and "PreviewImage" in object_info
+                and "PreviewAny" in object_info
+                and box_ok
             )
-            text_ok = self._config.grounding_model_name in model_options
 
         self._text_supported = text_ok
         self._modes = {
             "text": text_ok,
-            "points": True,
-            "box": True,
-            "mask_refinement": True,
+            "points": points_ok,
+            "box": box_ok,
+            "mask_refinement": mask_ok,
         }
-        return True
+        return bool(points_ok or box_ok or mask_ok or text_ok)
 
     async def capabilities(self) -> dict[str, Any]:
         return {
@@ -227,9 +328,17 @@ class ComfyImageSegmenter:
         client = self._client_instance()
 
         box = request.box
-        has_spatial = bool(request.points) or box is not None
+        has_points = bool(request.points)
+        has_spatial = has_points or box is not None
+        if has_points and not self._modes["points"]:
+            raise SegmentationFailedError("point segmentation is not available on this server")
+        if box is not None and not self._modes["box"]:
+            raise SegmentationFailedError("box segmentation is not available on this server")
+        if request.mask is not None and not self._modes["mask_refinement"]:
+            raise SegmentationFailedError("mask refinement is not available on this server")
 
         detect_ms: float | None = None
+        dino_prompt: str | None = None
         if request.prompt and request.prompt.strip() and not has_spatial:
             if not self._text_supported:
                 raise SegmentationFailedError(
@@ -248,12 +357,46 @@ class ComfyImageSegmenter:
                     prompt=request.prompt.strip(),
                     config=self._config,
                 )
-                prompt_id, history = await client.run_workflow_to_history(
-                    workflow,
-                    request_id=request_id,
-                )
+                try:
+                    prompt_id, history = await client.run_workflow_to_history(
+                        workflow,
+                        request_id=request_id,
+                    )
+                except ExecutionFailedError as error:
+                    detail = str(error.details.get("detail") or "")
+                    if detail.lower().startswith("grounding dino did not find"):
+                        raise NotFoundError(
+                            "no object matched the text prompt",
+                            prompt=request.prompt.strip(),
+                            threshold=self._config.grounding_threshold,
+                        ) from error
+                    raise
             detect_ms = elapsed_ms(t0)
             node_output = client.extract_node_outputs(history, prompt_id, "detect")
+            if not node_output:
+                node_output = client.consume_websocket_node_output(prompt_id, "detect")
+            preview_output = client.extract_node_outputs(history, prompt_id, "preview_detections")
+            if not preview_output:
+                preview_output = client.consume_websocket_node_output(prompt_id, "preview_detections")
+            if not node_output and preview_output:
+                node_output = preview_output
+            logger.info(
+                "COMFY DINO HISTORY prompt_id=%s fields=%s preview_fields=%s preview=%s",
+                prompt_id,
+                sorted(node_output),
+                sorted(preview_output),
+                str(preview_output)[:500],
+            )
+            raw_bboxes = node_output.get("bboxes") or node_output.get("BBOX")
+            raw_scores = node_output.get("scores") or node_output.get("confidences")
+            logger.info(
+                "COMFY DINO OUTPUT prompt_id=%s fields=%s bbox_type=%s bbox_count=%s score_count=%s",
+                prompt_id,
+                sorted(node_output),
+                type(raw_bboxes).__name__,
+                len(raw_bboxes) if isinstance(raw_bboxes, list) else 0,
+                len(raw_scores) if isinstance(raw_scores, list) else 0,
+            )
             parsed = _parse_best_bbox(node_output, width, height)
             if parsed is None:
                 raise NotFoundError(
@@ -262,20 +405,25 @@ class ComfyImageSegmenter:
                     threshold=self._config.grounding_threshold,
                 )
             box, score = parsed
-            if score < self._config.grounding_threshold:
+            if score is not None and score < self._config.grounding_threshold:
                 raise NotFoundError(
                     "best object match is below the configured confidence threshold",
                     prompt=request.prompt.strip(),
                     score=score,
                     threshold=self._config.grounding_threshold,
                 )
+            dino_prompt = request.prompt.strip()
 
         if box is None and not request.points:
             raise NotFoundError("segmentation input did not resolve to a region")
 
-        pos = _pixel_points(request.points, width, height, label="include")
-        neg = _pixel_points(request.points, width, height, label="exclude")
-        bboxes = [_pixel_bbox(box, width, height)] if box is not None else None
+        point_prompts = request.points
+        if box is not None and dino_prompt is None:
+            box_positive, box_negative = _box_point_prompts(box)
+            point_prompts = (*point_prompts, *box_positive, *box_negative)
+        pos = _pixel_points(point_prompts, width, height, label="include")
+        neg = _pixel_points(point_prompts, width, height, label="exclude")
+        bboxes = None
 
         mask_name: str | None = None
         if request.mask is not None:
@@ -302,6 +450,7 @@ class ComfyImageSegmenter:
                 coordinates_negative=neg or None,
                 bboxes=bboxes,
                 mask_upload_name=mask_name,
+                grounding_prompt=dino_prompt,
             )
             outputs = await client.run_workflow(
                 workflow,

@@ -272,14 +272,19 @@ def validate_object_info(object_info: dict[str, Any]) -> None:
 
 
 def _combo_options(field: Any) -> list[str]:
+    """Read combo values from legacy and current ComfyUI /object_info schemas."""
     if not isinstance(field, (list, tuple)) or not field:
         return []
 
     first = field[0]
-
     if isinstance(first, (list, tuple)):
         return [str(item) for item in first]
-
+    if len(field) > 1 and isinstance(field[1], dict):
+        options = field[1].get("options")
+        if isinstance(options, list):
+            return [str(item) for item in options]
+    if all(isinstance(item, str) for item in field):
+        return [str(item) for item in field]
     return []
 
 

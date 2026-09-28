@@ -113,6 +113,7 @@ class ComfyUIClient:
         self._timeout_override = timeout
         self._http = http_client
         self._owned_http = http_client is None
+        self._ws_node_outputs: dict[str, dict[str, dict[str, Any]]] = {}
 
     async def aclose(self) -> None:
         if self._owned_http and self._http is not None:
@@ -351,6 +352,15 @@ class ComfyUIClient:
                     ),
                 )
         return images
+
+    def consume_websocket_node_output(
+        self,
+        prompt_id: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        prompt_outputs = self._ws_node_outputs.pop(prompt_id, {})
+        output = prompt_outputs.get(node_id)
+        return output if isinstance(output, dict) else {}
 
     @staticmethod
     def history_entry_for_prompt(
@@ -669,6 +679,18 @@ class ComfyUIClient:
                     )
                     if not _message_matches_prompt(message, prompt_id):
                         continue
+
+                    if msg_type == "executed":
+                        node_id = data.get("node")
+                        output = data.get("output")
+                        if isinstance(node_id, str) and isinstance(output, dict):
+                            self._ws_node_outputs.setdefault(prompt_id, {})[node_id] = output
+                            logger.info(
+                                "COMFY WS OUTPUT prompt_id=%s node_id=%s fields=%s",
+                                prompt_id,
+                                node_id,
+                                sorted(output),
+                            )
 
                     if msg_type == "execution_error":
                         raise ExecutionFailedError(

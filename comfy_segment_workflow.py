@@ -1,4 +1,4 @@
-"""Build ComfyUI API workflows for Grounding DINO detect + SAM2 segment (MVP)."""
+"""Build workflows for this installation's Grounding DINO and SAM2 nodes."""
 
 from __future__ import annotations
 
@@ -34,17 +34,30 @@ def build_grounding_detect_workflow(
             "class_type": "LoadImage",
         },
         "grounding_model": {
-            "inputs": {"model_name": config.grounding_model_name},
+            "inputs": {
+                "model": config.grounding_model_name,
+                "precision": config.grounding_precision,
+                "device": config.grounding_device,
+            },
             "class_type": config.grounding_loader_class,
         },
         "detect": {
             "inputs": {
-                "grounding_model": ["grounding_model", 0],
+                "grounding_dino": ["grounding_model", 0],
                 "image": ["load", 0],
-                "prompt": prompt,
-                "threshold": config.grounding_threshold,
+                "text": prompt,
+                "box_threshold": config.grounding_threshold,
+                "text_threshold": config.grounding_text_threshold,
             },
             "class_type": config.grounding_detect_class,
+        },
+        "preview": {
+            "inputs": {"images": ["load", 0]},
+            "class_type": "PreviewImage",
+        },
+        "preview_detections": {
+            "inputs": {"source": ["detect", 1]},
+            "class_type": "PreviewAny",
         },
     }
 
@@ -56,8 +69,9 @@ def build_sam2_segment_workflow(
     config: ImageSegmentationConfig,
     coordinates_positive: list[dict[str, float]] | None = None,
     coordinates_negative: list[dict[str, float]] | None = None,
-    bboxes: list[list[float]] | None = None,
+    bboxes: list[list[float]] | list[Any] | None = None,
     mask_upload_name: str | None = None,
+    grounding_prompt: str | None = None,
 ) -> dict[str, Any]:
     segment_inputs: dict[str, Any] = {
         "sam2_model": ["sam2_model", 0],
@@ -69,7 +83,9 @@ def build_sam2_segment_workflow(
         segment_inputs["coordinates_positive"] = json.dumps(coordinates_positive)
     if coordinates_negative:
         segment_inputs["coordinates_negative"] = json.dumps(coordinates_negative)
-    if bboxes is not None:
+    if grounding_prompt is not None:
+        segment_inputs["bboxes"] = ["detect", 0]
+    elif bboxes is not None:
         segment_inputs["bboxes"] = bboxes
     if mask_upload_name is not None:
         segment_inputs["mask"] = ["image_to_mask", 0]
@@ -96,6 +112,29 @@ def build_sam2_segment_workflow(
             "class_type": "SaveImage",
         },
     }
+    if grounding_prompt is not None:
+        workflow["grounding_model"] = {
+            "inputs": {
+                "model": config.grounding_model_name,
+                "precision": config.grounding_precision,
+                "device": config.grounding_device,
+            },
+            "class_type": config.grounding_loader_class,
+        }
+        workflow["detect"] = {
+            "inputs": {
+                "grounding_dino": ["grounding_model", 0],
+                "image": ["load", 0],
+                "text": grounding_prompt,
+                "box_threshold": config.grounding_threshold,
+                "text_threshold": config.grounding_text_threshold,
+            },
+            "class_type": config.grounding_detect_class,
+        }
+        workflow["preview_detections"] = {
+            "inputs": {"source": ["detect", 1]},
+            "class_type": "PreviewAny",
+        }
     if mask_upload_name is not None:
         workflow["load_mask"] = {
             "inputs": {"image": mask_upload_name},
