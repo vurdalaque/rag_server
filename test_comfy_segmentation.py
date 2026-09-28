@@ -28,6 +28,7 @@ def _config() -> ImageSegmentationConfig:
         grounding_device="cuda",
         grounding_loader_class="GroundingDINOLoader",
         grounding_detect_class="GroundingDINODetect",
+        bbox_adapter_class="BBoxFromCoordinates",
         sam2_model="sam2_hiera_small.safetensors",
         sam2_segmentor="single_image",
         sam2_device="cuda",
@@ -120,6 +121,18 @@ def test_segmentation_probe_reports_text_only_when_grounding_model_is_available(
             },
             "output": ["BBOX", "STRING"],
         },
+        "BBoxFromCoordinates": {
+            "input": {
+                "required": {
+                    "image": ["IMAGE"],
+                    "x1": ["FLOAT"],
+                    "y1": ["FLOAT"],
+                    "x2": ["FLOAT"],
+                    "y2": ["FLOAT"],
+                }
+            },
+            "output": ["BBOX"],
+        },
     }
     client = MagicMock(spec=ComfyUIClient)
     client.fetch_object_info = AsyncMock(return_value=object_info)
@@ -133,6 +146,13 @@ def test_segmentation_probe_reports_text_only_when_grounding_model_is_available(
     assert asyncio.run(segmenter.probe()) is True
     assert segmenter._modes["text"] is False
     assert segmenter._modes["points"] is True
+
+    object_info["GroundingDINOLoader"]["input"]["required"]["model"] = [["tiny", "base"]]
+    object_info.pop("BBoxFromCoordinates")
+    segmenter = ComfyImageSegmenter(_config(), client=client)
+    assert asyncio.run(segmenter.probe()) is True
+    assert segmenter._modes["text"] is False
+    assert segmenter._modes["box"] is False
 
 
 def test_text_not_found_skips_sam2() -> None:
@@ -240,8 +260,11 @@ def test_text_detection_above_threshold_runs_sam2_after_dino() -> None:
     assert dino_workflow["detect"]["inputs"]["box_threshold"] == 0.3
     assert dino_workflow["detect"]["inputs"]["text_threshold"] == 0.25
     sam_workflow = client.run_workflow.await_args.args[0]
-    assert sam_workflow["detect"]["class_type"] == "GroundingDINODetect"
-    assert sam_workflow["segment"]["inputs"]["bboxes"] == ["detect", 0]
+    assert "detect" not in sam_workflow
+    assert sam_workflow["bbox_adapter"]["class_type"] == "BBoxFromCoordinates"
+    assert sam_workflow["bbox_adapter"]["inputs"]["image"] == ["load", 0]
+    assert sam_workflow["segment"]["inputs"]["bboxes"] == ["bbox_adapter", 0]
+    client.run_workflow_to_history.assert_awaited_once()
     assert segmenter.last_timings["total_ms"] >= 0
     assert segmenter.last_timings["detect_ms"] >= 0
     assert segmenter.last_timings["segment_ms"] >= 0
@@ -275,5 +298,13 @@ def test_spatial_segment_runs_sam_without_detect() -> None:
     client.run_workflow.assert_awaited_once()
     workflow = client.run_workflow.await_args.args[0]
     assert "detect" not in workflow
-    assert "bboxes" not in workflow["segment"]["inputs"]
-    assert workflow["segment"]["inputs"]["coordinates_positive"]
+    assert workflow["bbox_adapter"]["class_type"] == "BBoxFromCoordinates"
+    assert workflow["bbox_adapter"]["inputs"] == {
+        "image": ["load", 0],
+        "x1": 0.2,
+        "y1": 0.2,
+        "x2": 0.8,
+        "y2": 0.8,
+    }
+    assert workflow["segment"]["inputs"]["bboxes"] == ["bbox_adapter", 0]
+    assert "coordinates_positive" not in workflow["segment"]["inputs"]

@@ -358,8 +358,10 @@ class ComfyUIClient:
         prompt_id: str,
         node_id: str,
     ) -> dict[str, Any]:
-        prompt_outputs = self._ws_node_outputs.pop(prompt_id, {})
-        output = prompt_outputs.get(node_id)
+        prompt_outputs = self._ws_node_outputs.get(prompt_id, {})
+        output = prompt_outputs.pop(node_id, None)
+        if not prompt_outputs:
+            self._ws_node_outputs.pop(prompt_id, None)
         return output if isinstance(output, dict) else {}
 
     @staticmethod

@@ -29,6 +29,7 @@ class ImageSegmentationConfig:
     grounding_device: str
     grounding_loader_class: str
     grounding_detect_class: str
+    bbox_adapter_class: str
     sam2_model: str
     sam2_segmentor: str
     sam2_device: str
@@ -56,6 +57,10 @@ def load_image_segmentation_config() -> ImageSegmentationConfig:
         grounding_detect_class=os.getenv(
             "IMAGE_GROUNDING_DETECT_CLASS",
             "GroundingDINODetect",
+        ).strip(),
+        bbox_adapter_class=os.getenv(
+            "IMAGE_BBOX_ADAPTER_CLASS",
+            "BBoxFromCoordinates",
         ).strip(),
         sam2_model=os.getenv(
             "IMAGE_SAM2_MODEL",

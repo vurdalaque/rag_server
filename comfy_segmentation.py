@@ -64,35 +64,6 @@ def _pixel_points(
     return coords
 
 
-def _pixel_bbox(box: SegmentBox, width: int, height: int) -> list[float]:
-    return [
-        round(min(box.x1, box.x2) * max(width - 1, 1), 2),
-        round(min(box.y1, box.y2) * max(height - 1, 1), 2),
-        round(max(box.x1, box.x2) * max(width - 1, 1), 2),
-        round(max(box.y1, box.y2) * max(height - 1, 1), 2),
-    ]
-
-
-def _box_point_prompts(box: SegmentBox) -> tuple[tuple[SegmentPoint, ...], tuple[SegmentPoint, ...]]:
-    """Represent a literal box with direct SAM2 foreground/background prompts."""
-    center_x = (box.x1 + box.x2) / 2.0
-    center_y = (box.y1 + box.y2) / 2.0
-    positive = (SegmentPoint(center_x, center_y, "include"),)
-    margin = 0.01
-    candidates = (
-        (box.x1 - margin, center_y),
-        (box.x2 + margin, center_y),
-        (center_x, box.y1 - margin),
-        (center_x, box.y2 + margin),
-    )
-    negative = tuple(
-        SegmentPoint(x, y, "exclude")
-        for x, y in candidates
-        if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0
-    )
-    return positive, negative
-
-
 def _image_size(data: bytes) -> tuple[int, int]:
     from PIL import Image
 
@@ -271,7 +242,16 @@ class ComfyImageSegmenter:
             _socket_type(segment_inputs, "coordinates_positive") == "STRING"
             and _socket_type(segment_inputs, "coordinates_negative") == "STRING"
         )
-        box_ok = _socket_type(segment_inputs, "bboxes") == "BBOX"
+        sam_accepts_bbox = _socket_type(segment_inputs, "bboxes") == "BBOX"
+        bbox_adapter = object_info.get(self._config.bbox_adapter_class)
+        bbox_inputs = ((bbox_adapter or {}).get("input") or {}).get("required") or {}
+        bbox_adapter_ok = (
+            isinstance(bbox_adapter, dict)
+            and _socket_type(bbox_inputs, "image") == "IMAGE"
+            and all(_socket_type(bbox_inputs, name) == "FLOAT" for name in ("x1", "y1", "x2", "y2"))
+            and "BBOX" in set(bbox_adapter.get("output") or [])
+        )
+        box_ok = sam_accepts_bbox and bbox_adapter_ok
         mask_ok = _socket_type(segment_inputs, "mask") == "MASK" and points_ok
 
         text_ok = False
@@ -338,7 +318,9 @@ class ComfyImageSegmenter:
             raise SegmentationFailedError("mask refinement is not available on this server")
 
         detect_ms: float | None = None
-        dino_prompt: str | None = None
+        bbox_coordinates = (
+            (box.x1, box.y1, box.x2, box.y2) if box is not None else None
+        )
         if request.prompt and request.prompt.strip() and not has_spatial:
             if not self._text_supported:
                 raise SegmentationFailedError(
@@ -412,18 +394,13 @@ class ComfyImageSegmenter:
                     score=score,
                     threshold=self._config.grounding_threshold,
                 )
-            dino_prompt = request.prompt.strip()
+            bbox_coordinates = (box.x1, box.y1, box.x2, box.y2)
 
         if box is None and not request.points:
             raise NotFoundError("segmentation input did not resolve to a region")
 
-        point_prompts = request.points
-        if box is not None and dino_prompt is None:
-            box_positive, box_negative = _box_point_prompts(box)
-            point_prompts = (*point_prompts, *box_positive, *box_negative)
-        pos = _pixel_points(point_prompts, width, height, label="include")
-        neg = _pixel_points(point_prompts, width, height, label="exclude")
-        bboxes = None
+        pos = _pixel_points(request.points, width, height, label="include")
+        neg = _pixel_points(request.points, width, height, label="exclude")
 
         mask_name: str | None = None
         if request.mask is not None:
@@ -448,9 +425,9 @@ class ComfyImageSegmenter:
                 config=self._config,
                 coordinates_positive=pos or None,
                 coordinates_negative=neg or None,
-                bboxes=bboxes,
+                bbox_coordinates=bbox_coordinates,
+                bbox_adapter_class=self._config.bbox_adapter_class,
                 mask_upload_name=mask_name,
-                grounding_prompt=dino_prompt,
             )
             outputs = await client.run_workflow(
                 workflow,

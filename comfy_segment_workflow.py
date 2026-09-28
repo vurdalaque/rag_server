@@ -69,9 +69,9 @@ def build_sam2_segment_workflow(
     config: ImageSegmentationConfig,
     coordinates_positive: list[dict[str, float]] | None = None,
     coordinates_negative: list[dict[str, float]] | None = None,
-    bboxes: list[list[float]] | list[Any] | None = None,
+    bbox_coordinates: tuple[float, float, float, float] | None = None,
+    bbox_adapter_class: str = "BBoxFromCoordinates",
     mask_upload_name: str | None = None,
-    grounding_prompt: str | None = None,
 ) -> dict[str, Any]:
     segment_inputs: dict[str, Any] = {
         "sam2_model": ["sam2_model", 0],
@@ -83,10 +83,8 @@ def build_sam2_segment_workflow(
         segment_inputs["coordinates_positive"] = json.dumps(coordinates_positive)
     if coordinates_negative:
         segment_inputs["coordinates_negative"] = json.dumps(coordinates_negative)
-    if grounding_prompt is not None:
-        segment_inputs["bboxes"] = ["detect", 0]
-    elif bboxes is not None:
-        segment_inputs["bboxes"] = bboxes
+    if bbox_coordinates is not None:
+        segment_inputs["bboxes"] = ["bbox_adapter", 0]
     if mask_upload_name is not None:
         segment_inputs["mask"] = ["image_to_mask", 0]
 
@@ -112,28 +110,17 @@ def build_sam2_segment_workflow(
             "class_type": "SaveImage",
         },
     }
-    if grounding_prompt is not None:
-        workflow["grounding_model"] = {
+    if bbox_coordinates is not None:
+        x1, y1, x2, y2 = bbox_coordinates
+        workflow["bbox_adapter"] = {
             "inputs": {
-                "model": config.grounding_model_name,
-                "precision": config.grounding_precision,
-                "device": config.grounding_device,
-            },
-            "class_type": config.grounding_loader_class,
-        }
-        workflow["detect"] = {
-            "inputs": {
-                "grounding_dino": ["grounding_model", 0],
                 "image": ["load", 0],
-                "text": grounding_prompt,
-                "box_threshold": config.grounding_threshold,
-                "text_threshold": config.grounding_text_threshold,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
             },
-            "class_type": config.grounding_detect_class,
-        }
-        workflow["preview_detections"] = {
-            "inputs": {"source": ["detect", 1]},
-            "class_type": "PreviewAny",
+            "class_type": bbox_adapter_class,
         }
     if mask_upload_name is not None:
         workflow["load_mask"] = {
