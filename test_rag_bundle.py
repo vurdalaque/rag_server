@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-
 import json
+import os
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -184,6 +186,30 @@ def test_upload_requires_bearer_token(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 def test_server_starts_without_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if os.getenv("RAG_TEST_ISOLATED_STARTUP") != "1":
+        worker_env = os.environ.copy()
+        worker_env["RAG_TEST_ISOLATED_STARTUP"] = "1"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                f"{Path(__file__)}::test_server_starts_without_index",
+                "-q",
+                "--tb=short",
+            ],
+            cwd=Path(__file__).parent,
+            env=worker_env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        assert completed.returncode == 0, (
+            f"worker stdout:\n{completed.stdout}\nworker stderr:\n{completed.stderr}"
+        )
+        return
+
     monkeypatch.setenv("RAG_ADMIN_TOKEN", "test-token")
     monkeypatch.setenv("RAG_STAGING_DIR", str(tmp_path / "staging"))
     monkeypatch.setenv("RAG_BUNDLE_STATE_DIR", str(tmp_path / "state"))
