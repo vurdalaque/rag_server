@@ -49,6 +49,7 @@ from image_mcp_tools import (
     list_mcp_tool_names,
     list_ping_tool_names,
     parse_image_artifact_id,
+    artifact_delivery_confirmed,
     resolve_generated_image_artifact,
     store_generated_image_artifact,
 )
@@ -625,6 +626,8 @@ async def health() -> dict[str, Any]:
 
 @app.get("/mcp/artifacts/{artifact_id}")
 async def download_mcp_artifact(artifact_id: str) -> FileResponse:
+    if artifact_delivery_confirmed(artifact_id):
+        raise HTTPException(status_code=404, detail="artifact already delivered")
     artifact = resolve_generated_image_artifact(artifact_id)
     if artifact is None:
         parsed_id = parse_image_artifact_id(artifact_id)
@@ -1389,8 +1392,8 @@ def _mcp_json_response() -> bool:
 
 
 def _mcp_stateless_http() -> bool:
-    """Keep initialized client sessions by default for long-running tools."""
-    return os.getenv("MCP_STATELESS_HTTP", "false").strip().lower() in {
+    """Avoid expiring server-side MCP sessions between requests by default."""
+    return os.getenv("MCP_STATELESS_HTTP", "true").strip().lower() in {
         "1",
         "true",
         "yes",

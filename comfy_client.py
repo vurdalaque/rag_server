@@ -719,9 +719,12 @@ class ComfyUIClient:
         seed_used: int,
         client_id: str | None = None,
         cancel_event: asyncio.Event | None = None,
+        on_submitted=None,
     ) -> ComfyPromptOutputs:
         run_client_id = client_id or str(uuid.uuid4())
         prompt_id = await self.submit_prompt(workflow, run_client_id)
+        if on_submitted is not None:
+            on_submitted(prompt_id)
         await self.wait_for_prompt_terminal(
             prompt_id,
             run_client_id,
@@ -888,6 +891,7 @@ class ComfyUIClient:
         request_id: str,
         timeout: float | None = None,
         cancel_event: asyncio.Event | None = None,
+        on_submitted=None,
     ) -> list[dict[str, Any]]:
         previous_timeout = self._timeout_override
         if timeout is not None:
@@ -899,6 +903,7 @@ class ComfyUIClient:
                 seed_used=seed_used,
                 client_id=request_id,
                 cancel_event=cancel_event,
+                on_submitted=on_submitted,
             )
             results: list[dict[str, Any]] = []
             for image in outputs.images:

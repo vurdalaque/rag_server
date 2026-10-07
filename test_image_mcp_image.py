@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -409,3 +411,160 @@ def test_probe_skipped_when_disabled() -> None:
     backend = ComfyUIBackend(config)
 
     assert asyncio.run(backend.probe()) is False
+
+
+def test_generation_job_deduplicates_and_recovers_result(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
+    server = MCPServer("durable-generation-test")
+    backend = MagicMock()
+    backend.generate = AsyncMock(return_value=ImageGenerationResult(
+        images=[GeneratedImage(data=b"\x89PNG\r\n\x1a\n" + b"x", mime_type="image/png")],
+        seed=1, prompt_id="durable-prompt", timings={},
+    ))
+    register_image_tools(server, backend)
+
+    async def run():
+        first = await server.call_tool("generate_image", {"prompt": "red cube", "request_id": "test-job-1"})
+        assert not first.is_error, first
+        duplicate = await server.call_tool("generate_image", {"prompt": "red cube", "request_id": "test-job-1"})
+        assert not duplicate.is_error, duplicate
+        await asyncio.sleep(0.1)
+        status = await server.call_tool("get_generation_job", {"request_id": "test-job-1"})
+        assert not status.is_error, status
+        assert status.structured_content["status"] == "completed"
+        assert status.structured_content["result"]["artifacts"][0]["artifact_id"] == "durable-prompt_0"
+        conflict = await server.call_tool("generate_image", {"prompt": "blue cube", "request_id": "test-job-1"})
+        assert conflict.is_error
+
+    asyncio.run(run())
+    backend.generate.assert_awaited_once()
+
+
+def test_artifact_expiry_preserves_job_database(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
+    image_mcp_tools._job_register("old-job", "fingerprint", 1)
+    stale = tmp_path / "old-prompt_0.png"
+    stale.write_bytes(b"\x89PNG\r\n\x1a\n")
+    unrelated = tmp_path / "notes.png"
+    unrelated.write_bytes(b"x")
+    assert image_mcp_tools.cleanup_expired_image_artifacts(now=image_mcp_tools.time.time() + 10**7) == 1
+    assert not stale.exists()
+    assert unrelated.exists()
+    assert image_mcp_tools._job_read("old-job") is not None
+
+
+def test_delivery_confirmation_removes_only_job_artifacts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
+    image_mcp_tools._job_register("delivered-job", "fingerprint", 2)
+    artifacts = []
+    for index in range(2):
+        artifact = image_mcp_tools.store_generated_image_artifact(
+            "delivery-prompt", index,
+            GeneratedImage(data=b"\x89PNG\r\n\x1a\n", mime_type="image/png"),
+        )
+        artifacts.append(artifact.model_dump(mode="json"))
+    image_mcp_tools._job_update("delivered-job", "completed", result={"artifacts": artifacts})
+    untouched = tmp_path / "unrelated-prompt_0.png"
+    untouched.write_bytes(b"unrelated")
+    ids = [item["artifact_id"] for item in artifacts]
+    with pytest.raises(image_mcp_tools.InvalidRequestError):
+        image_mcp_tools.confirm_generated_image_delivery("delivered-job", ids[:1])
+    assert all((tmp_path / f"{item}.png").exists() for item in ids)
+    first = image_mcp_tools.confirm_generated_image_delivery("delivered-job", ids)
+    second = image_mcp_tools.confirm_generated_image_delivery("delivered-job", ids)
+    assert first["status"] == second["status"] == "delivered"
+    assert all(image_mcp_tools.artifact_delivery_confirmed(item) for item in ids)
+    assert all(not (tmp_path / f"{item}.png").exists() for item in ids)
+    assert untouched.exists()
+    assert image_mcp_tools._job_read("delivered-job") is not None
+
+
+def test_delivery_confirmation_tool_is_idempotent(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
+    server = MCPServer("delivery-confirmation-test")
+    register_image_tools(server, MagicMock())
+    image_mcp_tools._job_register("mcp-delivery", "fingerprint", 1)
+    artifact = image_mcp_tools.store_generated_image_artifact(
+        "tool-prompt", 0, GeneratedImage(data=b"\x89PNG\r\n\x1a\n", mime_type="image/png"),
+    )
+    image_mcp_tools._job_update("mcp-delivery", "completed", result={"artifacts": [artifact.model_dump(mode="json")]})
+
+    async def run():
+        bad = await server.call_tool("confirm_generation_delivery", {
+            "request_id": "mcp-delivery", "artifact_ids": ["wrong_0"],
+        })
+        assert bad.is_error
+        for _ in range(2):
+            response = await server.call_tool("confirm_generation_delivery", {
+                "request_id": "mcp-delivery", "artifact_ids": [artifact.artifact_id],
+            })
+            assert not response.is_error
+            assert response.structured_content["status"] == "delivered"
+
+    asyncio.run(run())
+    assert not (tmp_path / f"{artifact.artifact_id}.png").exists()
+
+
+def test_delivered_artifact_cannot_be_recovered(tmp_path, monkeypatch) -> None:
+    from fastapi import HTTPException
+    import rag_server
+
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
+    image_mcp_tools._job_register("delivered-job", "fingerprint", 1)
+    artifact = image_mcp_tools.store_generated_image_artifact(
+        "delivered-prompt", 0, GeneratedImage(data=b"\x89PNG\r\n\x1a\n", mime_type="image/png"),
+    )
+    image_mcp_tools._job_update("delivered-job", "completed", result={"artifacts": [artifact.model_dump(mode="json")]})
+    image_mcp_tools.confirm_generated_image_delivery("delivered-job", [artifact.artifact_id])
+    backend = MagicMock()
+    backend.recover_generated_image = AsyncMock()
+    monkeypatch.setattr(rag_server, "image_backend", backend)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(rag_server.download_mcp_artifact(artifact.artifact_id))
+    assert error.value.status_code == 404
+    backend.recover_generated_image.assert_not_awaited()
+
+
+def test_env_example_documents_all_application_variables() -> None:
+    root = Path(__file__).resolve().parent
+    pattern = re.compile(r'''(?:os\.getenv|os\.environ\.get|env_bool|env_int|env_float|_env_int|_env_float)\(\s*['"]([A-Z][A-Z0-9_]+)['"]''')
+    used = set()
+    for source in root.glob('*.py'):
+        if not source.name.startswith('test_'):
+            used.update(pattern.findall(source.read_text(encoding='utf-8')))
+    example = (root / 'env.example').read_text(encoding='utf-8')
+    documented = set(re.findall(r'(?m)^\s*#?\s*([A-Z][A-Z0-9_]+)\s*=', example))
+    assert not used - documented, ', '.join(sorted(used - documented))
+
+
+def test_generation_job_unknown_is_not_replayed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
+    monkeypatch.setenv("IMAGE_GENERATION_TIMEOUT", "0")
+    server = MCPServer("unknown-generation-test")
+    backend = MagicMock()
+    backend.generate = AsyncMock()
+    register_image_tools(server, backend)
+    job, created = image_mcp_tools._job_register("lost-submit", "fingerprint", 1)
+    assert created and job["status"] == "running"
+    with image_mcp_tools._jobs_db() as db:
+        db.execute("UPDATE generation_jobs SET updated=0 WHERE request_id=?", ("lost-submit",))
+    result = asyncio.run(server.call_tool("get_generation_job", {"request_id": "lost-submit"}))
+    assert result.structured_content["status"] == "unknown"
+    backend.generate.assert_not_awaited()
+
+
+def test_generation_job_recovers_known_prompt_without_submission(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
+    server = MCPServer("recovered-generation-test")
+    backend = MagicMock()
+    backend.generate = AsyncMock()
+    backend.recover_generated_image = AsyncMock(return_value=(
+        GeneratedImage(data=b"\x89PNG\r\n\x1a\n" + b"x", mime_type="image/png"), "success",
+    ))
+    register_image_tools(server, backend)
+    image_mcp_tools._job_register("recover-job", "fingerprint", 1)
+    image_mcp_tools._job_update("recover-job", "running", prompt_ids=["known-prompt"])
+    result = asyncio.run(server.call_tool("get_generation_job", {"request_id": "recover-job"}))
+    assert result.structured_content["status"] == "completed"
+    assert result.structured_content["result"]["artifacts"][0]["artifact_id"] == "known-prompt_0"
+    backend.generate.assert_not_awaited()

@@ -7,6 +7,24 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class GenerateImageJobOutput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    image_count: int | None = None
+    request_id: str | None = None
+    status: str | None = None
+    prompt_ids: list[str] | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class GenerationJobOutput(BaseModel):
+    request_id: str
+    status: str
+    prompt_ids: list[str]
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
 class ImageGenerationDefaultsOutput(BaseModel):
     resolution: int
     steps: int
@@ -144,6 +162,10 @@ class GenerateImageInput(BaseModel):
     sketch: str | None = Field(
         default=None,
         description=_SKETCH_FIELD_DESCRIPTION,
+    )
+    request_id: str | None = Field(
+        default=None,
+        description="Stable idempotency key for a generation job.",
     )
 
 

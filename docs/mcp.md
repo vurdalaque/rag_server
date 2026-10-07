@@ -5,7 +5,7 @@
 - **Имя сервера:** `Project Knowledge Gateway`
 - **Версия:** `1.2.0`
 - **Endpoint:** `POST /mcp/` (mount от корня FastAPI-приложения)
-- **Транспорт:** Streamable HTTP, по умолчанию stateful (`MCP_STATELESS_HTTP=false`): клиент вызывает `initialize` и передаёт полученный `mcp-session-id` в последующих запросах. Это сохраняет транспорт на время долгих `tools/call`. Для connector-style клиентов без сессии доступен `MCP_STATELESS_HTTP=true`.
+- **Транспорт:** Streamable HTTP, по умолчанию stateless (`MCP_STATELESS_HTTP=true`): сервер не хранит MCP-сессии между запросами. Для старых клиентов можно задать `MCP_STATELESS_HTTP=false`. Задачи генерации с `request_id` хранятся независимо от MCP-сессии.
 - **Формат ответа на POST:** по умолчанию **одно тело `application/json`** (`MCP_JSON_RESPONSE=true`). В этом режиме в сокет до завершения инструмента не уходит ничего, включая заголовки, поэтому любому прокси перед `:8000` нужен `proxy_read_timeout` ≥ `IMAGE_GENERATION_TIMEOUT`.
 - `MCP_JSON_RESPONSE=false` переключает POST на **SSE**: заголовки отдаются сразу, keepalive-пинг раз в 15 с. Годится только для клиентов, которые разбирают `text/event-stream` на POST. Smoke: `tests/mcp_smoke.sh`, регрессия: `test_mcp_long_tool.py`.
 
@@ -331,6 +331,11 @@ Retrieval + вызов upstream LLM (`LLM_URL`). Удобен, если у кл�
 | `reference_images` | `string[]?` | `null` | До 10 PNG (base64 или MCP ImageContent): визуальные референсы (WHAT) |
 | `sketch` | `string?` | `null` | Один PNG: композиция / layout (HOW), мягкая spatial guidance |
 | `mask` | `string?` | `null` | Один PNG: мягкая region guidance (WHERE), не hard inpainting |
+| `request_id` | `string?` | `null` | Ключ идемпотентности задачи; без него сохраняется синхронный контракт |
+
+При `request_id` вызов возвращает состояние `running`, `completed`, `failed` или `unknown`. Запись хранится в SQLite `MCP_ARTIFACTS_DIR/generation-jobs.sqlite3`; запросы с тем же ID и другими параметрами отклоняются. `get_generation_job(request_id)` возвращает состояние и при `completed` метаданные артефактов. После перезапуска известный `prompt_id` восстанавливается через ComfyUI history. Если результат отправки в ComfyUI неизвестен, сервер возвращает `unknown` и не запускает вторую генерацию. Для надёжного восстановления SQLite и каталог артефактов должны находиться на постоянном томе, доступном всем процессам сервера.
+
+После успешной загрузки **всех** изображений во внешнюю систему клиент вызывает `confirm_generation_delivery(request_id, artifact_ids)`. Сервер проверяет точное совпадение IDs с результатом задачи, атомарно фиксирует состояние `delivered` и удаляет только связанные файлы изображений. Подтверждение повторяемо; скачивание уже доставленного артефакта возвращает 404 и не восстанавливает его из ComfyUI. При сбое загрузки подтверждать задачу нельзя; до подтверждения действует обычный TTL. SQLite-файлы TTL-очистка не удаляет.
 
 Пока backend Qwen Image 2.1 квадратный: если заданы **и** `width`, **и** `height` и они **не равны** — `unsupported_parameter` с `constraint: width_must_equal_height`. Одно поле или равные значения задают квадратное разрешение.
 

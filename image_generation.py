@@ -299,6 +299,8 @@ class ComfyUIBackend:
     async def generate(
         self,
         request: GenerateImageRequest,
+        *,
+        on_submitted=None,
     ) -> ImageGenerationResult:
         total_started = time.monotonic()
         validated = self._validate_request(request)
@@ -394,6 +396,7 @@ class ComfyUIBackend:
                         workflow,
                         request_id=request_id,
                         timeout=self._config.generate_timeout,
+                        on_submitted=on_submitted,
                     )
                 if raw_images:
                     last_prompt_id = str(raw_images[0].get("prompt_id") or request_id)
