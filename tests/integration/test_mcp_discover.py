@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rag_server
+import radius_rag.api.server as api_server
 from radius_rag.mcp.mcp_test_helpers import INITIALIZE_BODY, MCP_HEADERS, mcp_initialize
 
 DISCOVER_BODY = {
@@ -300,11 +301,9 @@ def test_mcp_artifact_download_recovers_from_comfy_history(
             prompt_id=prompt_id,
         ), "success"
 
-    monkeypatch.setattr(
-        rag_server,
-        "image_backend",
-        SimpleNamespace(recover_generated_image=recover_generated_image),
-    )
+    backend = SimpleNamespace(recover_generated_image=recover_generated_image)
+    monkeypatch.setattr(api_server, "image_backend", backend)
+    monkeypatch.setattr(rag_server, "image_backend", backend)
     response = mcp_client.get("/mcp/artifacts/recover-job_0")
 
     assert response.status_code == 200

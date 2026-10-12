@@ -442,6 +442,7 @@ def test_delivery_confirmation_tool_is_idempotent(tmp_path, monkeypatch) -> None
 def test_delivered_artifact_cannot_be_recovered(tmp_path, monkeypatch) -> None:
     from fastapi import HTTPException
     import rag_server
+    import radius_rag.api.server as api_server
 
     monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
     image_mcp_tools_internal._job_register("delivered-job", "fingerprint", 1)
@@ -452,6 +453,7 @@ def test_delivered_artifact_cannot_be_recovered(tmp_path, monkeypatch) -> None:
     image_mcp_tools.confirm_generated_image_delivery("delivered-job", [artifact.artifact_id])
     backend = MagicMock()
     backend.recover_generated_image = AsyncMock()
+    monkeypatch.setattr(api_server, "image_backend", backend)
     monkeypatch.setattr(rag_server, "image_backend", backend)
     with pytest.raises(HTTPException) as error:
         asyncio.run(rag_server.download_mcp_artifact(artifact.artifact_id))
