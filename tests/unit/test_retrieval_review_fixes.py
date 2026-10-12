@@ -212,4 +212,11 @@ def test_claim_evaluation_jobs_sql_excludes_exhausted_attempts() -> None:
 
     source = inspect.getsource(db_mod.claim_evaluation_jobs)
     assert "attempts < max_attempts" in source
-    assert "status = 'dead'" in source
+    assert "_SQL_TERMINALIZE_EXHAUSTED_JOBS" in source
+
+
+def test_exhausted_cleanup_respects_active_lease() -> None:
+    from radius_rag.observability.storage.db import _SQL_TERMINALIZE_EXHAUSTED_JOBS
+
+    assert "lease_expires_at > now()" in _SQL_TERMINALIZE_EXHAUSTED_JOBS
+    assert "attempts >= max_attempts" in _SQL_TERMINALIZE_EXHAUSTED_JOBS

@@ -33,6 +33,8 @@ class EventFilters:
 class JudgeVersionFilter:
     prompt_version: str | None = None
     judge_model: str | None = None
+    methodology_fingerprint: str | None = None
+    raw_evaluation_version: str | None = None
 
     @classmethod
     def parse(cls, evaluation_version: str | None) -> JudgeVersionFilter:
@@ -44,14 +46,22 @@ class JudgeVersionFilter:
         return cls(
             prompt_version=ident.prompt_version or None,
             judge_model=ident.judge_model or None,
+            methodology_fingerprint=ident.methodology_fingerprint,
+            raw_evaluation_version=evaluation_version.strip(),
         )
 
     @property
     def evaluation_version(self) -> str | None:
+        if self.raw_evaluation_version:
+            return self.raw_evaluation_version
         from radius_rag.observability.evaluation.identity import build_evaluation_version
 
         if self.prompt_version and self.judge_model:
-            return build_evaluation_version(self.prompt_version, self.judge_model)
+            return build_evaluation_version(
+                self.prompt_version,
+                self.judge_model,
+                self.methodology_fingerprint,
+            )
         return None
 
 
@@ -208,10 +218,7 @@ async def fetch_coverage(
         *eval_params,
     )
 
-    if judge.prompt_version and judge.judge_model:
-        evaluation_version = f"{judge.prompt_version}:{judge.judge_model}"
-    else:
-        evaluation_version = cfg.evaluation_version
+    evaluation_version = judge.evaluation_version or cfg.evaluation_version
 
     pending = await pool.fetchval(
         """

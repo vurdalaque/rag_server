@@ -105,9 +105,9 @@ class RetrievalConfig:
 
     @property
     def evaluation_version(self) -> str:
-        from radius_rag.observability.evaluation.identity import build_evaluation_version
+        from radius_rag.observability.evaluation.identity import evaluation_version_from_config
 
-        return build_evaluation_version(self.judge_prompt_version, self.judge_llm_model)
+        return evaluation_version_from_config(self)
 
     def telemetry_ready(self) -> bool:
         return self.telemetry_enabled and bool(self.database_url)

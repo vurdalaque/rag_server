@@ -39,9 +39,20 @@ async def get_pool(config: RetrievalConfig | None = None) -> Any:
 
 async def close_pool() -> None:
     global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+    if _pool is None:
+        return
+    pool = _pool
+    _pool = None
+    try:
+        await pool.close()
+    except Exception:
+        logger.debug("asyncpg pool close failed", exc_info=True)
+
+
+def discard_pool() -> None:
+    """Release pool reference without closing (safe when the event loop is gone)."""
+    global _pool
+    _pool = None
 
 
 def _migration_files(migrations_dir: Path) -> list[Path]:
@@ -214,10 +225,13 @@ async def reconcile_missing_evaluation_jobs(
     *,
     limit: int = 100,
     max_attempts: int = 3,
+    event_id: UUID | str | None = None,
 ) -> int:
     """Create pending jobs for stored events that have no job for this evaluator version."""
     if limit <= 0:
         return 0
+    if isinstance(event_id, str):
+        event_id = UUID(event_id)
     pool = await get_pool()
     async with pool.acquire() as connection:
         rows = await connection.fetch(
@@ -233,6 +247,7 @@ async def reconcile_missing_evaluation_jobs(
                 WHERE j.event_id = e.event_id
                   AND j.evaluation_version = $1
             )
+              AND ($4::uuid IS NULL OR e.event_id = $4)
             ORDER BY e.created_at DESC
             LIMIT $2
             ON CONFLICT (event_id, evaluation_version) DO NOTHING
@@ -241,6 +256,7 @@ async def reconcile_missing_evaluation_jobs(
             evaluation_version,
             limit,
             max_attempts,
+            event_id,
         )
     return len(rows)
 
@@ -264,22 +280,31 @@ async def enqueue_evaluation_jobs_bulk(
     return int(row["inserted_count"]), int(row["skipped_count"])
 
 
+# Jobs on their final attempt keep running until lease expires or worker finishes.
+_SQL_TERMINALIZE_EXHAUSTED_JOBS = """
+UPDATE retrieval_obs.evaluation_jobs
+SET status = 'dead',
+    lease_expires_at = NULL,
+    lease_token = NULL,
+    last_error = COALESCE(last_error, 'max attempts exceeded'),
+    updated_at = now()
+WHERE evaluation_version = $1
+  AND status IN ('pending', 'leased', 'running')
+  AND attempts >= max_attempts
+  AND NOT (
+    status IN ('leased', 'running')
+    AND lease_expires_at IS NOT NULL
+    AND lease_expires_at > now()
+  )
+"""
+
+
 async def mark_exhausted_evaluation_jobs(evaluation_version: str) -> int:
-    """Terminalize jobs that exceeded max_attempts (e.g. after worker crash)."""
+    """Terminalize jobs that exceeded max_attempts without an active lease."""
     pool = await get_pool()
     async with pool.acquire() as connection:
         result = await connection.execute(
-            """
-            UPDATE retrieval_obs.evaluation_jobs
-            SET status = 'dead',
-                lease_expires_at = NULL,
-                lease_token = NULL,
-                last_error = COALESCE(last_error, 'max attempts exceeded'),
-                updated_at = now()
-            WHERE evaluation_version = $1
-              AND status IN ('pending', 'leased', 'running')
-              AND attempts >= max_attempts
-            """,
+            _SQL_TERMINALIZE_EXHAUSTED_JOBS,
             evaluation_version,
         )
     # asyncpg returns "UPDATE N"
@@ -301,17 +326,7 @@ async def claim_evaluation_jobs(
     async with pool.acquire() as connection:
         async with connection.transaction():
             await connection.execute(
-                """
-                UPDATE retrieval_obs.evaluation_jobs
-                SET status = 'dead',
-                    lease_expires_at = NULL,
-                    lease_token = NULL,
-                    last_error = COALESCE(last_error, 'max attempts exceeded'),
-                    updated_at = now()
-                WHERE evaluation_version = $1
-                  AND status IN ('pending', 'leased', 'running')
-                  AND attempts >= max_attempts
-                """,
+                _SQL_TERMINALIZE_EXHAUSTED_JOBS,
                 evaluation_version,
             )
             rows = await connection.fetch(
@@ -487,7 +502,11 @@ async def commit_evaluation_and_complete_job(
     if not evaluation_version:
         from radius_rag.observability.evaluation.identity import build_evaluation_version
 
-        evaluation_version = build_evaluation_version(prompt_version, judge_model)
+        evaluation_version = build_evaluation_version(
+            prompt_version,
+            judge_model,
+            row.get("methodology_fingerprint"),
+        )
 
     async with pool.acquire() as connection:
         async with connection.transaction():
