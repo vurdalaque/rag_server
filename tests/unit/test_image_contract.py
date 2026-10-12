@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from io import BytesIO
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from PIL import Image
 from mcp.server.mcpserver import MCPServer
 
 from image_generation import (
@@ -21,11 +19,15 @@ from image_generation import (
 from image_generation_config import ImageGenerationConfig
 from image_generation_errors import ComfyUIUnavailableError, UnsupportedParameterError
 from image_mcp_tools import register_image_tools, reset_image_mcp_registration
-from test_image_mcp_image import _sample_capabilities_payload
+from tests.helpers.image_fixtures import (
+    png_b64,
+    sample_capabilities_payload,
+    truncated_png_b64,
+)
 
 import comfy_workflow
 from comfy_workflow import load_workflow_template
-from image_generation_config import _DEFAULT_TEMPLATE
+from radius_rag.imaging.image_generation_config import _DEFAULT_TEMPLATE
 
 
 @pytest.fixture
@@ -68,17 +70,6 @@ def config(tmp_path: Any) -> ImageGenerationConfig:
     )
 
 
-def _png_b64(size: tuple[int, int] = (64, 64), color: tuple[int, int, int] = (1, 2, 3)) -> str:
-    buffer = BytesIO()
-    Image.new("RGB", size, color=color).save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
-def _truncated_png_b64() -> str:
-    data = base64.b64decode(_png_b64())
-    return base64.b64encode(data[:-40]).decode("ascii")
-
-
 @pytest.fixture(autouse=True)
 def _reset_tools() -> None:
     reset_image_mcp_registration()
@@ -91,7 +82,7 @@ def mcp_server(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> tuple[MCPServe
     monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
     server = MCPServer("contract-test")
     backend = MagicMock()
-    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    backend.capabilities = AsyncMock(return_value=sample_capabilities_payload())
     backend.generate = AsyncMock(
         return_value=ImageGenerationResult(
             images=[GeneratedImage(data=b"\x89PNG\r\n\x1a\n", mime_type="image/png")],
@@ -132,7 +123,7 @@ def test_prompt_only_generate(mcp_server: tuple[MCPServer, MagicMock]) -> None:
 
 def test_one_reference_image(mcp_server: tuple[MCPServer, MagicMock]) -> None:
     server, backend = mcp_server
-    encoded = _png_b64()
+    encoded = png_b64()
     asyncio.run(
         server.call_tool(
             "generate_image",
@@ -145,7 +136,7 @@ def test_one_reference_image(mcp_server: tuple[MCPServer, MagicMock]) -> None:
 
 def test_multiple_reference_images(mcp_server: tuple[MCPServer, MagicMock]) -> None:
     server, backend = mcp_server
-    refs = [_png_b64(color=(i, i, i)) for i in range(3)]
+    refs = [png_b64(color=(i, i, i)) for i in range(3)]
     asyncio.run(
         server.call_tool(
             "generate_image",
@@ -163,8 +154,8 @@ def test_valid_sketch_and_mask(mcp_server: tuple[MCPServer, MagicMock]) -> None:
             "generate_image",
             {
                 "prompt": "edit",
-                "sketch": _png_b64(color=(10, 20, 30)),
-                "mask": _png_b64(color=(200, 200, 200)),
+                "sketch": png_b64(color=(10, 20, 30)),
+                "mask": png_b64(color=(200, 200, 200)),
             },
         ),
     )
@@ -180,9 +171,9 @@ def test_reference_sketch_mask_together(mcp_server: tuple[MCPServer, MagicMock])
             "generate_image",
             {
                 "prompt": "compose",
-                "reference_images": [_png_b64()],
-                "sketch": _png_b64(color=(5, 5, 5)),
-                "mask": _png_b64(color=(9, 9, 9)),
+                "reference_images": [png_b64()],
+                "sketch": png_b64(color=(5, 5, 5)),
+                "mask": png_b64(color=(9, 9, 9)),
             },
         ),
     )
@@ -255,7 +246,7 @@ def test_unequal_width_height_rejected(mcp_server: tuple[MCPServer, MagicMock]) 
 
 def test_corrupt_reference_mask_sketch_codes(mcp_server: tuple[MCPServer, MagicMock]) -> None:
     server, _ = mcp_server
-    bad = _truncated_png_b64()
+    bad = truncated_png_b64()
 
     for field, args in (
         ("invalid_reference_image", {"reference_images": [bad]}),
@@ -275,7 +266,7 @@ def test_more_than_ten_references_rejected(mcp_server: tuple[MCPServer, MagicMoc
     backend.generate = AsyncMock(
         side_effect=TooManyImagesError("too many", count=11, max_images=10),
     )
-    refs = [_png_b64(color=(1, 1, 1)) for _ in range(11)]
+    refs = [png_b64(color=(1, 1, 1)) for _ in range(11)]
     result = asyncio.run(
         server.call_tool(
             "generate_image",
@@ -360,7 +351,7 @@ def test_backend_capabilities_payload_shape() -> None:
 
 
 def test_workflow_sketch_mask_augment_prompt(config: ImageGenerationConfig) -> None:
-    from test_image_generation_comfy import SAMPLERS, SCHEDULERS
+    from tests.unit.test_image_generation_comfy import SAMPLERS, SCHEDULERS
 
     cfg = config
     params = comfy_workflow.WorkflowBuildParams(

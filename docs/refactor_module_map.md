@@ -74,9 +74,12 @@ Root `image_*` and `comfy_*` → `src/radius_rag/imaging/<same module name>.py`.
 
 Regenerate: `python tools/migrate_imaging_mcp_package.py` + `python tools/write_imaging_mcp_shims.py`.
 
-## Planned
+## Tests
 
-| Legacy | Target |
-|--------|--------|
+- `tests/unit/` — fast mocks, retrieval/imaging/rag units
+- `tests/integration/` — `TestClient`, optional `RETRIEVAL_DATABASE_URL`
+- `tests/e2e/` — live uvicorn / ComfyUI (`acceptance` marker)
 
-Regenerate shims after moves: `python tools/migrate_observability_package.py` (copy) + `python tools/write_retrieval_shims.py`.
+`pytest` collects only `tests/` (`pyproject.toml`). Helpers: `tests/helpers/`.
+
+Regenerate shims: `python tools/migrate_*_package.py` + `python tools/write_*_shims.py`.

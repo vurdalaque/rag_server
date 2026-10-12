@@ -5,6 +5,8 @@ import pytest
 from pathlib import Path
 from fastapi.testclient import TestClient
 
+pytest.importorskip("asyncpg")
+
 import rag_metrics
 import rag_server
 

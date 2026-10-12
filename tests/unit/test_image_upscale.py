@@ -15,13 +15,8 @@ from image_generation_errors import (
     OutputTooLargeError,
     UnsupportedParameterError,
 )
-from image_upscale import (
-    ComfyUpscaleBackend,
-    UpscaleRequest,
-    build_comfy_upscale_workflow,
-    _pick_sr_model_name,
-    _resolve_upscale_params,
-)
+from image_upscale import ComfyUpscaleBackend, UpscaleRequest, build_comfy_upscale_workflow
+from radius_rag.imaging.image_upscale import _pick_sr_model_name, _resolve_upscale_params
 from image_upscale_config import ImageUpscaleConfig
 
 

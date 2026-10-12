@@ -14,7 +14,7 @@ from image_analysis import (
     build_analysis_messages,
 )
 from image_generation_errors import BackendUnavailableError, InvalidRequestError
-from test_image_contract import _png_b64
+from tests.helpers.image_fixtures import png_b64
 
 
 def _analysis_config(**overrides: object) -> ImageAnalysisConfig:
@@ -33,7 +33,7 @@ def _analysis_config(**overrides: object) -> ImageAnalysisConfig:
 def test_build_analysis_messages_default_instruction() -> None:
     from image_analysis import AnalysisImage, DEFAULT_ANALYSIS_INSTRUCTION
 
-    png = base64.b64decode(_png_b64())
+    png = base64.b64decode(png_b64())
     images = (AnalysisImage(mime_type="image/png", data=png),)
     messages = build_analysis_messages(images, None)
     assert messages[0]["role"] == "system"
@@ -43,11 +43,11 @@ def test_build_analysis_messages_default_instruction() -> None:
 
 
 def test_llm_analyzer_strips_multimodal_response() -> None:
-    png = base64.b64decode(_png_b64())
+    png = base64.b64decode(png_b64())
     analyzer = LlmImageAnalyzer(config=_analysis_config())
 
     with patch(
-        "image_analysis.multimodal_chat",
+        "radius_rag.imaging.image_analysis.multimodal_chat",
         new_callable=AsyncMock,
         return_value="  red sphere on gray background  ",
     ) as chat:
@@ -65,16 +65,16 @@ def test_llm_analyzer_strips_multimodal_response() -> None:
 
 
 def test_llm_analyzer_rejects_blank_instruction() -> None:
-    png = base64.b64decode(_png_b64())
+    png = base64.b64decode(png_b64())
     analyzer = LlmImageAnalyzer(config=_analysis_config())
 
-    with patch("image_analysis.multimodal_chat", new_callable=AsyncMock):
+    with patch("radius_rag.imaging.image_analysis.multimodal_chat", new_callable=AsyncMock):
         with pytest.raises(InvalidRequestError):
             asyncio.run(analyzer.analyze((png,), ("image/png",), "   "))
 
 
 def test_llm_analyzer_disabled_raises_backend_unavailable() -> None:
-    png = base64.b64decode(_png_b64())
+    png = base64.b64decode(png_b64())
     analyzer = LlmImageAnalyzer(config=_analysis_config(enabled=False))
 
     with pytest.raises(BackendUnavailableError):

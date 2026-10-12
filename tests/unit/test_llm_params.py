@@ -5,6 +5,7 @@ import importlib
 import pytest
 
 import llm_params
+import radius_rag.llm.params as _llm_params_impl
 
 
 def reload_llm_params(
@@ -25,6 +26,7 @@ def reload_llm_params(
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
+    importlib.reload(_llm_params_impl)
     importlib.reload(llm_params)
 
 

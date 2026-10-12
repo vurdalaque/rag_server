@@ -111,8 +111,9 @@ module = "mcp.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "."]
-addopts = "--ignore=test_mcp_long_tool_worker.py"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--ignore=tests/e2e/test_mcp_long_tool_worker.py"
 markers = [
     "acceptance: requires a live ComfyUI backend",
     "integration: requires RETRIEVAL_DATABASE_URL (TimescaleDB/PostgreSQL)",

@@ -9,7 +9,8 @@ from pathlib import Path
 
 
 def test_mcp_generate_image_waits_for_slow_backend() -> None:
-    worker = Path(__file__).with_name("test_mcp_long_tool_worker.py")
+    root = Path(__file__).resolve().parents[2]
+    worker = root / "tests" / "e2e" / "test_mcp_long_tool_worker.py"
     env = os.environ.copy()
     # Проверяются production-дефолты: stateful transport и JSON-ответы.
     env.pop("MCP_JSON_RESPONSE", None)
@@ -23,7 +24,7 @@ def test_mcp_generate_image_waits_for_slow_backend() -> None:
             "-q",
             "--tb=short",
         ],
-        cwd=str(Path(__file__).parent),
+        cwd=str(root),
         env=env,
         capture_output=True,
         text=True,

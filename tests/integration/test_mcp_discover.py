@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rag_server
-from mcp_test_helpers import INITIALIZE_BODY, MCP_HEADERS, mcp_initialize
+from radius_rag.mcp.mcp_test_helpers import INITIALIZE_BODY, MCP_HEADERS, mcp_initialize
 
 DISCOVER_BODY = {
     "jsonrpc": "2.0",

@@ -13,15 +13,20 @@
 
 ## Структура проекта
 
+Канонический код — в `src/radius_rag/`; корневые `*.py` — тонкие shim’ы для обратной совместимости (см. [docs/refactor_module_map.md](docs/refactor_module_map.md)).
+
 ```
-rag_server.py      — FastAPI app, MCP, admin endpoints
-rag_service.py     — RagService: загрузка индекса, retrieve, ask
-rag_bundle.py      — валидация, staging, activate/rollback
-rag_search.py      — legacy search helper
-rag_proxy.py       — proxy utilities
-test_rag_bundle.py — тесты bundle и поиска
-requirements.txt   — зависимости (дублирует pyproject.toml)
-pyproject.toml     — сборка и dev-инструменты
+src/radius_rag/
+  api/server.py           — FastAPI, MCP, admin (entry: uvicorn rag_server:app)
+  rag/                    — индекс, retrieve, bundle, metrics
+  llm/                    — HTTP client и defaults для LLM
+  imaging/                — ComfyUI, generation, upscale, segmentation
+  mcp/                    — MCP image tools
+  observability/          — retrieval telemetry, judge, admin analytics
+rag_server.py             — shim → radius_rag.api.server
+tests/unit|integration|e2e — pytest (testpaths = tests)
+tools/                    — migrate_*_package.py, write_*_shims.py
+pyproject.toml            — сборка, radius-rag-evaluator CLI
 ```
 
 ## Контракт metadata: `source_type`

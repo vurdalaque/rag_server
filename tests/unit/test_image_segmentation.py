@@ -13,17 +13,17 @@ from image_segmentation import (
     SegmentRequest,
     validate_segment_request,
 )
-from test_image_contract import _png_b64
+from tests.helpers.image_fixtures import png_b64
 
 
 def test_validate_segment_request_requires_prompt_points_or_box() -> None:
-    png = base64.b64decode(_png_b64())
+    png = base64.b64decode(png_b64())
     with pytest.raises(InvalidSegmentationInputError):
         validate_segment_request(SegmentRequest(image=png))
 
 
 def test_validate_mask_requires_points() -> None:
-    png = base64.b64decode(_png_b64((16, 16)))
+    png = base64.b64decode(png_b64((16, 16)))
     with pytest.raises(InvalidSegmentationInputError):
         validate_segment_request(
             SegmentRequest(image=png, mask=png),
@@ -31,7 +31,7 @@ def test_validate_mask_requires_points() -> None:
 
 
 def test_validate_mask_cannot_combine_with_box() -> None:
-    png = base64.b64decode(_png_b64((16, 16)))
+    png = base64.b64decode(png_b64((16, 16)))
     with pytest.raises(InvalidSegmentationInputError):
         validate_segment_request(
             SegmentRequest(
@@ -44,7 +44,7 @@ def test_validate_mask_cannot_combine_with_box() -> None:
 
 
 def test_validate_normalized_box() -> None:
-    png = base64.b64decode(_png_b64())
+    png = base64.b64decode(png_b64())
     validate_segment_request(
         SegmentRequest(
             image=png,

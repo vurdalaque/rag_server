@@ -12,6 +12,7 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 
 import image_mcp_tools
+import radius_rag.mcp.image_mcp_tools as image_mcp_tools_internal
 from image_generation import GeneratedImage, ImageGenerationResult
 from image_mcp_schemas import generate_image_input_json_schema
 from image_mcp_tools import (
@@ -22,72 +23,7 @@ from image_mcp_tools import (
     register_image_tools,
     reset_image_mcp_registration,
 )
-
-
-def _sample_capabilities_payload(**overrides: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "backend": "comfyui",
-        "max_images": 4,
-        "max_output_bytes": 20971520,
-        "max_reference_images": 10,
-        "max_reference_bytes": 10485760,
-        "inputs": {
-            "reference_images": {
-                "supported": True,
-                "max_count": 10,
-                "max_bytes": 10485760,
-            },
-            "mask": {
-                "supported": True,
-                "max_count": 1,
-                "max_bytes": 10485760,
-                "semantics": "soft_region_guidance",
-            },
-            "sketch": {
-                "supported": True,
-                "max_count": 1,
-                "max_bytes": 10485760,
-                "semantics": "composition_guidance",
-            },
-        },
-        "resolution": {"min": 256, "max": 2048},
-        "defaults": {
-            "resolution": 1024,
-            "steps": 25,
-            "cfg": 1.0,
-            "sampler": "euler",
-            "scheduler": "simple",
-        },
-        "safety_validation_enabled": False,
-        "safety_enabled": False,
-        "samplers": {"sampler_name": ["euler"], "scheduler": ["simple"]},
-        "analysis": {"supported": True, "max_images": 10, "max_bytes": 10485760},
-        "segmentation": {
-            "supported": True,
-            "max_bytes": 10485760,
-            "max_dimension": 8192,
-            "mask_semantics": "selected_white_1_not_selected_black_0",
-            "modes": {
-                "text": True,
-                "points": True,
-                "box": True,
-                "mask_refinement": True,
-            },
-        },
-        "upscale": {
-            "supported": True,
-            "max_input_bytes": 10485760,
-            "max_output_bytes": 20971520,
-            "max_input_dimension": 4096,
-            "max_output_dimension": 8192,
-            "supports_scale_factor": True,
-            "supports_target_dimensions": True,
-            "max_scale": 4.0,
-            "default_scale": 2.0,
-        },
-    }
-    payload.update(overrides)
-    return payload
+from tests.helpers.image_fixtures import png_b64, sample_capabilities_payload
 
 
 @pytest.fixture(autouse=True)
@@ -164,8 +100,8 @@ def test_generate_image_tool_returns_error_without_backend() -> None:
     register_image_tools(server, backend)
 
     reset_image_mcp_registration()
-    image_mcp_tools._registered = True
-    image_mcp_tools._backend = None
+    image_mcp_tools_internal._registered = True
+    image_mcp_tools_internal._backend = None
 
     result = asyncio.run(server.call_tool("generate_image", {"prompt": "a red cube"}))
     assert result.is_error is True
@@ -175,8 +111,6 @@ def test_generate_image_tool_returns_error_without_backend() -> None:
 
 def test_upscale_tool_stays_visible_and_reports_unavailable_backend() -> None:
     from image_mcp_backends import ImageMcpBackends
-    from test_image_contract import _png_b64
-
     server = MCPServer("image-test-upscale-unavailable")
     register_image_tools(server, None, backends=ImageMcpBackends())
     tools = asyncio.run(server.list_tools())
@@ -185,7 +119,7 @@ def test_upscale_tool_stays_visible_and_reports_unavailable_backend() -> None:
     capabilities = asyncio.run(server.call_tool("image_generation_capabilities", {}))
     assert capabilities.structured_content["upscale"]["supported"] is False
     result = asyncio.run(
-        server.call_tool("upscale_image", {"image": _png_b64(), "scale": 4})
+        server.call_tool("upscale_image", {"image": png_b64(), "scale": 4})
     )
     assert result.is_error is True
     error = json.loads(next(block.text for block in result.content if block.type == "text"))
@@ -195,7 +129,7 @@ def test_upscale_tool_stays_visible_and_reports_unavailable_backend() -> None:
 def test_capabilities_tool_delegates_to_backend() -> None:
     server = MCPServer("image-test-capabilities")
     backend = MagicMock()
-    payload = _sample_capabilities_payload(max_images=2)
+    payload = sample_capabilities_payload(max_images=2)
     backend.capabilities = AsyncMock(return_value=payload)
     register_image_tools(server, backend)
 
@@ -210,7 +144,7 @@ def test_capabilities_tool_delegates_to_backend() -> None:
 def test_image_tools_publish_output_schema() -> None:
     server = MCPServer("image-test-output-schema")
     backend = MagicMock()
-    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    backend.capabilities = AsyncMock(return_value=sample_capabilities_payload())
     register_image_tools(server, backend)
 
     tools = asyncio.run(server.list_tools())
@@ -226,7 +160,7 @@ def test_image_tools_publish_output_schema() -> None:
 def test_capabilities_structured_output_matches_schema() -> None:
     server = MCPServer("image-test-cap-schema")
     backend = MagicMock()
-    payload = _sample_capabilities_payload()
+    payload = sample_capabilities_payload()
     backend.capabilities = AsyncMock(return_value=payload)
     register_image_tools(server, backend)
 
@@ -245,7 +179,7 @@ def test_capabilities_structured_output_matches_schema() -> None:
 def test_generate_image_success_structured_output_and_images() -> None:
     server = MCPServer("image-test-generate-structured")
     backend = MagicMock()
-    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    backend.capabilities = AsyncMock(return_value=sample_capabilities_payload())
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * 16
     backend.generate = AsyncMock(
         return_value=ImageGenerationResult(
@@ -286,7 +220,7 @@ def test_generate_image_comfy_error_stays_is_error() -> None:
 
     server = MCPServer("image-test-generate-error")
     backend = MagicMock()
-    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    backend.capabilities = AsyncMock(return_value=sample_capabilities_payload())
     backend.generate = AsyncMock(
         side_effect=ImageGenerationTimeoutError("timed out", timeout_seconds=30.0)
     )
@@ -321,7 +255,7 @@ def test_generate_image_tool_schema_is_model_agnostic() -> None:
 def test_generate_image_tools_list_input_schema_matches_canonical_model() -> None:
     server = MCPServer("image-test-list-schema")
     backend = MagicMock()
-    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    backend.capabilities = AsyncMock(return_value=sample_capabilities_payload())
     register_image_tools(server, backend)
 
     tools = asyncio.run(server.list_tools())
@@ -358,7 +292,7 @@ def test_generate_image_tools_list_via_mcp_jsonrpc() -> None:
     """tools/list over MCPServer (same path as HTTP /mcp after initialize)."""
     server = MCPServer("image-test-jsonrpc-list")
     backend = MagicMock()
-    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    backend.capabilities = AsyncMock(return_value=sample_capabilities_payload())
     register_image_tools(server, backend)
 
     listed = asyncio.run(server.list_tools())
@@ -442,7 +376,7 @@ def test_generation_job_deduplicates_and_recovers_result(tmp_path, monkeypatch) 
 
 def test_artifact_expiry_preserves_job_database(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
-    image_mcp_tools._job_register("old-job", "fingerprint", 1)
+    image_mcp_tools_internal._job_register("old-job", "fingerprint", 1)
     stale = tmp_path / "old-prompt_0.png"
     stale.write_bytes(b"\x89PNG\r\n\x1a\n")
     unrelated = tmp_path / "notes.png"
@@ -450,12 +384,12 @@ def test_artifact_expiry_preserves_job_database(tmp_path, monkeypatch) -> None:
     assert image_mcp_tools.cleanup_expired_image_artifacts(now=image_mcp_tools.time.time() + 10**7) == 1
     assert not stale.exists()
     assert unrelated.exists()
-    assert image_mcp_tools._job_read("old-job") is not None
+    assert image_mcp_tools_internal._job_read("old-job") is not None
 
 
 def test_delivery_confirmation_removes_only_job_artifacts(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
-    image_mcp_tools._job_register("delivered-job", "fingerprint", 2)
+    image_mcp_tools_internal._job_register("delivered-job", "fingerprint", 2)
     artifacts = []
     for index in range(2):
         artifact = image_mcp_tools.store_generated_image_artifact(
@@ -463,7 +397,7 @@ def test_delivery_confirmation_removes_only_job_artifacts(tmp_path, monkeypatch)
             GeneratedImage(data=b"\x89PNG\r\n\x1a\n", mime_type="image/png"),
         )
         artifacts.append(artifact.model_dump(mode="json"))
-    image_mcp_tools._job_update("delivered-job", "completed", result={"artifacts": artifacts})
+    image_mcp_tools_internal._job_update("delivered-job", "completed", result={"artifacts": artifacts})
     untouched = tmp_path / "unrelated-prompt_0.png"
     untouched.write_bytes(b"unrelated")
     ids = [item["artifact_id"] for item in artifacts]
@@ -476,18 +410,18 @@ def test_delivery_confirmation_removes_only_job_artifacts(tmp_path, monkeypatch)
     assert all(image_mcp_tools.artifact_delivery_confirmed(item) for item in ids)
     assert all(not (tmp_path / f"{item}.png").exists() for item in ids)
     assert untouched.exists()
-    assert image_mcp_tools._job_read("delivered-job") is not None
+    assert image_mcp_tools_internal._job_read("delivered-job") is not None
 
 
 def test_delivery_confirmation_tool_is_idempotent(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
     server = MCPServer("delivery-confirmation-test")
     register_image_tools(server, MagicMock())
-    image_mcp_tools._job_register("mcp-delivery", "fingerprint", 1)
+    image_mcp_tools_internal._job_register("mcp-delivery", "fingerprint", 1)
     artifact = image_mcp_tools.store_generated_image_artifact(
         "tool-prompt", 0, GeneratedImage(data=b"\x89PNG\r\n\x1a\n", mime_type="image/png"),
     )
-    image_mcp_tools._job_update("mcp-delivery", "completed", result={"artifacts": [artifact.model_dump(mode="json")]})
+    image_mcp_tools_internal._job_update("mcp-delivery", "completed", result={"artifacts": [artifact.model_dump(mode="json")]})
 
     async def run():
         bad = await server.call_tool("confirm_generation_delivery", {
@@ -510,11 +444,11 @@ def test_delivered_artifact_cannot_be_recovered(tmp_path, monkeypatch) -> None:
     import rag_server
 
     monkeypatch.setenv("MCP_ARTIFACTS_DIR", str(tmp_path))
-    image_mcp_tools._job_register("delivered-job", "fingerprint", 1)
+    image_mcp_tools_internal._job_register("delivered-job", "fingerprint", 1)
     artifact = image_mcp_tools.store_generated_image_artifact(
         "delivered-prompt", 0, GeneratedImage(data=b"\x89PNG\r\n\x1a\n", mime_type="image/png"),
     )
-    image_mcp_tools._job_update("delivered-job", "completed", result={"artifacts": [artifact.model_dump(mode="json")]})
+    image_mcp_tools_internal._job_update("delivered-job", "completed", result={"artifacts": [artifact.model_dump(mode="json")]})
     image_mcp_tools.confirm_generated_image_delivery("delivered-job", [artifact.artifact_id])
     backend = MagicMock()
     backend.recover_generated_image = AsyncMock()
@@ -526,7 +460,7 @@ def test_delivered_artifact_cannot_be_recovered(tmp_path, monkeypatch) -> None:
 
 
 def test_env_example_documents_all_application_variables() -> None:
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[2]
     pattern = re.compile(r'''(?:os\.getenv|os\.environ\.get|env_bool|env_int|env_float|_env_int|_env_float)\(\s*['"]([A-Z][A-Z0-9_]+)['"]''')
     used = set()
     for source in root.glob('*.py'):
@@ -544,9 +478,9 @@ def test_generation_job_unknown_is_not_replayed(tmp_path, monkeypatch) -> None:
     backend = MagicMock()
     backend.generate = AsyncMock()
     register_image_tools(server, backend)
-    job, created = image_mcp_tools._job_register("lost-submit", "fingerprint", 1)
+    job, created = image_mcp_tools_internal._job_register("lost-submit", "fingerprint", 1)
     assert created and job["status"] == "running"
-    with image_mcp_tools._jobs_db() as db:
+    with image_mcp_tools_internal._jobs_db() as db:
         db.execute("UPDATE generation_jobs SET updated=0 WHERE request_id=?", ("lost-submit",))
     result = asyncio.run(server.call_tool("get_generation_job", {"request_id": "lost-submit"}))
     assert result.structured_content["status"] == "unknown"
@@ -562,8 +496,8 @@ def test_generation_job_recovers_known_prompt_without_submission(tmp_path, monke
         GeneratedImage(data=b"\x89PNG\r\n\x1a\n" + b"x", mime_type="image/png"), "success",
     ))
     register_image_tools(server, backend)
-    image_mcp_tools._job_register("recover-job", "fingerprint", 1)
-    image_mcp_tools._job_update("recover-job", "running", prompt_ids=["known-prompt"])
+    image_mcp_tools_internal._job_register("recover-job", "fingerprint", 1)
+    image_mcp_tools_internal._job_update("recover-job", "running", prompt_ids=["known-prompt"])
     result = asyncio.run(server.call_tool("get_generation_job", {"request_id": "recover-job"}))
     assert result.structured_content["status"] == "completed"
     assert result.structured_content["result"]["artifacts"][0]["artifact_id"] == "known-prompt_0"

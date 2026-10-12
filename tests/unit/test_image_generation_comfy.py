@@ -11,8 +11,10 @@ import pytest
 
 import comfy_client
 import comfy_workflow
+import radius_rag.imaging.comfy_client as comfy_client_impl
 from comfy_client import ComfyUIClient
-from image_generation_config import _DEFAULT_TEMPLATE, ImageGenerationConfig
+from image_generation_config import ImageGenerationConfig
+from radius_rag.imaging.image_generation_config import _DEFAULT_TEMPLATE
 from image_generation import ComfyUIBackend
 from comfy_workflow import (
     WorkflowBuildParams,
@@ -295,7 +297,7 @@ def test_ws_ignores_other_prompt_id(config: ImageGenerationConfig) -> None:
                 raise AssertionError("unexpected extra recv")
             return self._messages.pop(0)
 
-    with patch.object(comfy_client.websockets, "connect", FakeWS):
+    with patch.object(comfy_client_impl.websockets, "connect", FakeWS):
         client = ComfyUIClient(config, http_client=AsyncMock())
         asyncio.run(client.wait_for_prompt_ws("target", "client-1"))
 
@@ -326,7 +328,7 @@ def test_ws_execution_error(config: ImageGenerationConfig) -> None:
         async def recv(self) -> str:
             return self._messages.pop(0)
 
-    with patch.object(comfy_client.websockets, "connect", FakeWS):
+    with patch.object(comfy_client_impl.websockets, "connect", FakeWS):
         client = ComfyUIClient(config, http_client=AsyncMock())
         with pytest.raises(comfy_client.ExecutionFailedError):
             asyncio.run(client.wait_for_prompt_ws("p1", "client-1"))
@@ -349,7 +351,7 @@ def test_ws_timeout(config: ImageGenerationConfig) -> None:
 
     short_config = dataclasses.replace(config, generate_timeout=0.01)
 
-    with patch.object(comfy_client.websockets, "connect", FakeWS):
+    with patch.object(comfy_client_impl.websockets, "connect", FakeWS):
         client = ComfyUIClient(short_config, http_client=AsyncMock())
         with pytest.raises(ImageGenerationTimeoutError):
             asyncio.run(client.wait_for_prompt_ws("p1", "client-1"))
@@ -458,8 +460,8 @@ def test_wait_terminal_history_ready_before_ws_event(config: ImageGenerationConf
     client = ComfyUIClient(config, http_client=AsyncMock())
     client.fetch_history = AsyncMock(return_value=history)
 
-    with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
-        with patch.object(comfy_client.websockets, "connect", BlockingWS):
+    with patch.object(comfy_client_impl, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
+        with patch.object(comfy_client_impl.websockets, "connect", BlockingWS):
             asyncio.run(client.wait_for_prompt_terminal("fast-pid", "client-1"))
 
 
@@ -499,8 +501,8 @@ def test_wait_terminal_lost_ws_completion_uses_history_poll(config: ImageGenerat
     client = ComfyUIClient(config, http_client=AsyncMock())
     client.fetch_history = AsyncMock(side_effect=fetch_history)
 
-    with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
-        with patch.object(comfy_client.websockets, "connect", BlockingWS):
+    with patch.object(comfy_client_impl, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
+        with patch.object(comfy_client_impl.websockets, "connect", BlockingWS):
             asyncio.run(client.wait_for_prompt_terminal("late-pid", "client-1"))
 
     assert calls["n"] >= 2
@@ -546,8 +548,8 @@ def test_wait_terminal_ws_ignores_other_prompt_id(config: ImageGenerationConfig)
     client = ComfyUIClient(config, http_client=AsyncMock())
     client.fetch_history = AsyncMock(return_value=history)
 
-    with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
-        with patch.object(comfy_client.websockets, "connect", FakeWS):
+    with patch.object(comfy_client_impl, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
+        with patch.object(comfy_client_impl.websockets, "connect", FakeWS):
             asyncio.run(client.wait_for_prompt_terminal("target", "client-1"))
 
 
@@ -599,8 +601,8 @@ def test_wait_terminal_parallel_prompts_independent(config: ImageGenerationConfi
     client.fetch_history = AsyncMock(side_effect=fetch_history)
 
     async def _run() -> None:
-        with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
-            with patch.object(comfy_client.websockets, "connect", BlockingWS):
+        with patch.object(comfy_client_impl, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
+            with patch.object(comfy_client_impl.websockets, "connect", BlockingWS):
                 await asyncio.gather(
                     client.wait_for_prompt_terminal("pid-a", "client-a"),
                     client.wait_for_prompt_terminal("pid-b", "client-b"),
@@ -685,8 +687,8 @@ def test_wait_terminal_history_completed_before_ws_subscribe(config: ImageGenera
     client = ComfyUIClient(config, http_client=AsyncMock())
     client.fetch_history = AsyncMock(return_value=history)
 
-    with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
-        with patch.object(comfy_client.websockets, "connect", BlockingWS):
+    with patch.object(comfy_client_impl, "_HISTORY_POLL_INTERVAL_SECONDS", 0.02):
+        with patch.object(comfy_client_impl.websockets, "connect", BlockingWS):
             asyncio.run(client.wait_for_prompt_terminal("early-pid", "client-1"))
 
 
@@ -735,8 +737,8 @@ def test_wait_terminal_ws_success_reconciles_history(config: ImageGenerationConf
     client = ComfyUIClient(config, http_client=AsyncMock())
     client.fetch_history = AsyncMock(side_effect=fetch_history)
 
-    with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.05):
-        with patch.object(comfy_client.websockets, "connect", FakeWS):
+    with patch.object(comfy_client_impl, "_HISTORY_POLL_INTERVAL_SECONDS", 0.05):
+        with patch.object(comfy_client_impl.websockets, "connect", FakeWS):
             asyncio.run(client.wait_for_prompt_terminal("ws-pid", "client-1"))
 
     assert calls["n"] >= 2
@@ -791,8 +793,8 @@ def test_wait_terminal_cancelled_cleans_up_ws_task(config: ImageGenerationConfig
 
     async def _run() -> None:
         cancel.set()
-        with patch.object(comfy_client, "_HISTORY_POLL_INTERVAL_SECONDS", 0.01):
-            with patch.object(comfy_client.websockets, "connect", SlowWS):
+        with patch.object(comfy_client_impl, "_HISTORY_POLL_INTERVAL_SECONDS", 0.01):
+            with patch.object(comfy_client_impl.websockets, "connect", SlowWS):
                 from image_generation_errors import CancelledError
 
                 with pytest.raises(CancelledError):

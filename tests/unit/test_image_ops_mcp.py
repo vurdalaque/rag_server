@@ -17,8 +17,7 @@ from image_analysis import AnalysisResult
 from image_mcp_tools import reset_image_mcp_registration
 from image_segmentation import SegmentRequest
 from image_upscale import UpscaleResult
-from test_image_contract import _png_b64
-from test_image_mcp_image import _sample_capabilities_payload
+from tests.helpers.image_fixtures import png_b64, sample_capabilities_payload
 
 IMAGE_OPS_TOOL_NAMES: tuple[str, ...] = (
     "analyze_image",
@@ -43,7 +42,7 @@ ImageMcpBackends = _ImageMcpBackends
 
 def _mock_generation_backend() -> MagicMock:
     backend = MagicMock()
-    backend.capabilities = AsyncMock(return_value=_sample_capabilities_payload())
+    backend.capabilities = AsyncMock(return_value=sample_capabilities_payload())
     return backend
 
 
@@ -57,7 +56,7 @@ def _mock_analyzer_backend() -> MagicMock:
 
 
 def _mock_segmenter_backend() -> MagicMock:
-    mask_png = base64.b64decode(_png_b64((8, 8), color=(255, 255, 255)))
+    mask_png = base64.b64decode(png_b64((8, 8), color=(255, 255, 255)))
     backend = MagicMock()
     backend.probe = AsyncMock(return_value=True)
     backend.segment = AsyncMock(return_value=mask_png)
@@ -77,7 +76,7 @@ def _mock_segmenter_backend() -> MagicMock:
 
 
 def _mock_upscaler_backend() -> MagicMock:
-    png = base64.b64decode(_png_b64((16, 16)))
+    png = base64.b64decode(png_b64((16, 16)))
     backend = MagicMock()
     backend.probe = AsyncMock(return_value=True)
     backend.capabilities = AsyncMock(
@@ -277,7 +276,7 @@ def test_analyze_image_delegates_to_analyzer_backend(
     ops_mcp_server: tuple[MCPServer, ImageMcpBackends],
 ) -> None:
     server, backends = ops_mcp_server
-    encoded = _png_b64()
+    encoded = png_b64()
     result = asyncio.run(
         server.call_tool(
             "analyze_image",
@@ -294,7 +293,7 @@ def test_segment_image_delegates_to_segmenter_backend(
     ops_mcp_server: tuple[MCPServer, ImageMcpBackends],
 ) -> None:
     server, backends = ops_mcp_server
-    encoded = _png_b64()
+    encoded = png_b64()
     result = asyncio.run(
         server.call_tool(
             "segment_image",
@@ -312,7 +311,7 @@ def test_upscale_image_delegates_to_upscaler_backend(
     ops_mcp_server: tuple[MCPServer, ImageMcpBackends],
 ) -> None:
     server, backends = ops_mcp_server
-    encoded = _png_b64((16, 16))
+    encoded = png_b64((16, 16))
     result = asyncio.run(
         server.call_tool(
             "upscale_image",

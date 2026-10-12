@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 os.environ.setdefault("MCP_JSON_RESPONSE", "true")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
-_BASETEMP = _PROJECT_ROOT / ".pytest_tmp"
+_BASETEMP = Path(tempfile.gettempdir()) / "radius_rag_server_pytest"
 
 
 def pytest_configure(config: pytest.Config) -> None:

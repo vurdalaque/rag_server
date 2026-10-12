@@ -15,13 +15,13 @@ from image_segmentation import create_comfy_segmenter_if_ready
 from image_generation_errors import ImageGenerationError, NotFoundError
 from image_segmentation_types import SegmentBox, SegmentRequest
 from image_upscale import create_upscale_backend_if_ready, UpscaleRequest
-from test_image_contract import _png_b64
+from tests.helpers.image_fixtures import png_b64
 
 COMFY_URL = os.getenv("COMFYUI_URL", "").strip()
 
 
 def _sample_png(size: int = 128) -> bytes:
-    return base64.b64decode(_png_b64((size, size)))
+    return base64.b64decode(png_b64((size, size)))
 
 
 def _schema_png(size: int = 512) -> bytes:
