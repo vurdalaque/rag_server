@@ -1,262 +1,71 @@
 #!/usr/bin/env bash
-# Запуск RAG server (FastAPI + MCP) с переменными из .env
+# Start RAG stack in tmux (server + optional retrieval evaluator).
 #
-# Первый запуск:
-#   cp env.example .env
-#   python -m venv .venv && source .venv/bin/activate
-#   pip install -e .
+#   cp env.example .env && pip install -e .
 #   ./start.sh
+#   tmux attach -t radius-server
 #
-# Параметры:
-#   ./start.sh --port 8010
-#   ./start.sh --env-file .env.local
-#
-# tmux (non-interactive shell, PATH без uv):
-#   tmux new -d -s radius-server './start.sh'
-#   # или с логом: tmux new -d -s radius-server './start.sh >>data/server.log 2>&1'
-#
-# Layout: код в src/radius_rag/, entrypoint uvicorn rag_server:app (корневой rag_server.py).
+# Foreground server (no tmux): ./start.sh --foreground  or  ./start_server.sh
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT"
+# shellcheck source=scripts/start_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/start_lib.sh"
 
-# src/ → radius_rag; корень → rag_server.py и legacy import bootstrap
-export PYTHONPATH="${ROOT}/src:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+start_lib_root
+start_lib_parse_stack_args "$@"
+start_lib_load_dotenv "$START_ENV_FILE"
 
-ENV_FILE=".env"
-HOST=""
-PORT=""
-USE_UV=false
-UV_BIN=""
-
-usage() {
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
-    echo "Options: --env-file PATH  --host HOST  --port PORT"
-}
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        --env-file)
-            ENV_FILE="$2"
-            shift 2
-            ;;
-        --host)
-            HOST="$2"
-            shift 2
-            ;;
-        --port)
-            PORT="$2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown argument: $1 (try --help)" >&2
-            exit 1
-            ;;
-    esac
-done
-
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "Env file not found: $ENV_FILE" >&2
-    echo "Copy env.example to .env and set RAG_ADMIN_TOKEN." >&2
-    exit 1
+if [[ "$START_STACK_MODE" == "foreground" ]]; then
+    exec "$START_ROOT/start_server.sh" --env-file "$START_ENV_FILE"
 fi
 
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
-
-if [[ -z "${RAG_ADMIN_TOKEN:-}" ]]; then
-    echo "RAG_ADMIN_TOKEN is not set in $ENV_FILE." >&2
-    exit 1
+if [[ "$START_STACK_MODE" != "evaluator-only" ]]; then
+    start_lib_require_admin_token
 fi
 
-activate_conda_env() {
-    local env_name="$1"
-
-    if [[ -n "${CONDA_PREFIX:-}" && "${CONDA_DEFAULT_ENV:-}" == "$env_name" ]]; then
+SERVER_SESSION="${RAG_TMUX_SESSION_SERVER:-radius-server}"
+EVAL_SESSION="${RAG_TMUX_SESSION_EVALUATOR:-radius-evaluator}"
+start_tmux_session() {
+    local name="$1"
+    local script="$2"
+    local quoted_env
+    quoted_env="$(printf '%q' "$START_ENV_FILE")"
+    if tmux has-session -t "$name" 2>/dev/null; then
+        echo "tmux session already running: $name"
         return 0
     fi
+    tmux new -d -s "$name" -c "$START_ROOT" "$script --env-file $quoted_env"
+    echo "started tmux session: $name"
+}
 
-    if command -v conda >/dev/null 2>&1; then
-        eval "$(conda shell.bash hook 2>/dev/null)" || true
-    elif [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
-        # shellcheck disable=SC1091
-        source "${HOME}/miniconda3/etc/profile.d/conda.sh"
-    elif [[ -f "${HOME}/anaconda3/etc/profile.d/conda.sh" ]]; then
-        # shellcheck disable=SC1091
-        source "${HOME}/anaconda3/etc/profile.d/conda.sh"
+if [[ "$START_STACK_MODE" == "both" || "$START_STACK_MODE" == "server" ]]; then
+    start_tmux_session "$SERVER_SESSION" "./start_server.sh"
+fi
+
+if [[ "$START_STACK_MODE" == "both" || "$START_STACK_MODE" == "evaluator" ]]; then
+    if [[ -z "${RETRIEVAL_DATABASE_URL:-}" ]]; then
+        echo "Skipping evaluator tmux session: RETRIEVAL_DATABASE_URL is not set." >&2
     else
-        echo "Cannot find conda to activate env: $env_name" >&2
-        return 1
-    fi
-
-    conda activate "$env_name"
-}
-
-activate_venv() {
-    local venv_path="$1"
-    venv_path="${venv_path/#\~/$HOME}"
-
-    if [[ ! -f "$venv_path/bin/activate" ]]; then
-        echo "Venv activate script not found: $venv_path/bin/activate" >&2
-        return 1
-    fi
-
-    # shellcheck disable=SC1091
-    source "$venv_path/bin/activate"
-}
-
-find_uv() {
-    if command -v uv >/dev/null 2>&1; then
-        UV_BIN="$(command -v uv)"
-        return 0
-    fi
-
-    for candidate in \
-        "${HOME}/.local/bin/uv" \
-        "${HOME}/.cargo/bin/uv" \
-        "/usr/local/bin/uv"
-    do
-        if [[ -x "$candidate" ]]; then
-            UV_BIN="$candidate"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-PYTHON_BIN="${PYTHON:-python}"
-
-if [[ -n "${RAG_VENV:-}" ]]; then
-    activate_venv "$RAG_VENV"
-    PYTHON_BIN="$(command -v python)"
-elif [[ -n "${RAG_CONDA_ENV:-}" ]]; then
-    activate_conda_env "$RAG_CONDA_ENV"
-    PYTHON_BIN="$(command -v python)"
-elif [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
-    PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
-elif [[ -x "$ROOT/.venv/bin/python" ]]; then
-    PYTHON_BIN="$ROOT/.venv/bin/python"
-    # shellcheck disable=SC1091
-    source "$ROOT/.venv/bin/activate"
-else
-    case "${RAG_USE_UV:-auto}" in
-        1|true|yes|on)
-            if find_uv; then
-                USE_UV=true
-            else
-                echo "RAG_USE_UV is set but uv was not found in PATH." >&2
-                exit 1
-            fi
-            ;;
-        auto)
-            if [[ -f "$ROOT/pyproject.toml" ]] && find_uv; then
-                USE_UV=true
-            fi
-            ;;
-    esac
-fi
-
-run_python() {
-    if [[ "$USE_UV" == true ]]; then
-        if [[ -n "${VIRTUAL_ENV:-}" ]] || [[ -d "${HOME}/.venv" ]]; then
-            "$UV_BIN" run --active python "$@"
-        else
-            "$UV_BIN" run python "$@"
-        fi
-    else
-        "$PYTHON_BIN" "$@"
-    fi
-}
-
-install_hint() {
-    local exe
-    exe="$(run_python -c 'import sys; print(sys.executable)' 2>/dev/null || echo "$PYTHON_BIN")"
-    echo "Install into the same interpreter start.sh uses:" >&2
-    echo "  $exe -m pip install -e ." >&2
-    if [[ "$USE_UV" == true ]]; then
-        echo "  # or: cd \"$ROOT\" && uv pip install -e . --python \"$exe\"" >&2
-    fi
-}
-
-retrieval_telemetry_wanted() {
-    case "${RETRIEVAL_TELEMETRY_ENABLED:-false}" in
-        1|true|yes|on|TRUE|YES|ON) return 0 ;;
-    esac
-    return 1
-}
-
-if [[ "$USE_UV" != true ]]; then
-    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-        echo "Python not found: $PYTHON_BIN" >&2
-        echo "Set RAG_VENV=~/.venv in .env for tmux/non-interactive shells." >&2
-        exit 1
+        start_tmux_session "$EVAL_SESSION" "./start_evaluator.sh"
     fi
 fi
 
-if ! run_python -c "import uvicorn" >/dev/null 2>&1; then
-    echo "uvicorn is not installed." >&2
-    install_hint
-    echo "Python: $PYTHON_BIN" >&2
-    echo "For tmux add RAG_VENV=~/.venv to .env (recommended over RAG_USE_UV)." >&2
-    exit 1
+case "${START_ATTACH:-}" in
+    server)
+        exec tmux attach -t "$SERVER_SESSION"
+        ;;
+    evaluator|eval)
+        exec tmux attach -t "$EVAL_SESSION"
+        ;;
+    all)
+        exec tmux attach -t "$SERVER_SESSION"
+        ;;
+esac
+
+echo ""
+echo "Attach:  tmux attach -t $SERVER_SESSION"
+if [[ -n "${RETRIEVAL_DATABASE_URL:-}" ]]; then
+    echo "         tmux attach -t $EVAL_SESSION"
 fi
-
-if ! run_python -c "import rag_server; import radius_rag" >/dev/null 2>&1; then
-    echo "Cannot import rag_server or radius_rag (check PYTHONPATH and editable install)." >&2
-    run_python -c "import rag_server" 2>&1 || true
-    install_hint
-    exit 1
-fi
-
-if retrieval_telemetry_wanted && [[ -n "${RETRIEVAL_DATABASE_URL:-}" ]]; then
-    if ! run_python -c "import asyncpg" >/dev/null 2>&1; then
-        echo "RETRIEVAL_TELEMETRY_ENABLED with RETRIEVAL_DATABASE_URL requires asyncpg." >&2
-        echo "Python: $(run_python -c 'import sys; print(sys.executable)')" >&2
-        echo "You may have installed into a different venv (e.g. ~/.venv vs $ROOT/.venv)." >&2
-        echo "Set RAG_VENV=~/.venv in .env if deps live there, or install into the interpreter above." >&2
-        install_hint
-        exit 1
-    fi
-fi
-
-export RAG_HOST="${HOST:-${RAG_HOST:-0.0.0.0}}"
-export RAG_PORT="${PORT:-${RAG_PORT:-8000}}"
-export EMBEDDING_URL="${EMBEDDING_URL:-http://127.0.0.1:8002/v1/embeddings}"
-export EMBEDDING_MODEL="${EMBEDDING_MODEL:-qwen3-embedding}"
-export RAG_STAGING_DIR="${RAG_STAGING_DIR:-./data/staging}"
-export RAG_BUNDLE_STATE_DIR="${RAG_BUNDLE_STATE_DIR:-./data/state}"
-
-mkdir -p "$RAG_STAGING_DIR" "$RAG_BUNDLE_STATE_DIR"
-
-UVICORN_ARGS=(
-    -m uvicorn rag_server:app
-    --host "$RAG_HOST"
-    --port "$RAG_PORT"
-    --timeout-graceful-shutdown 30
-)
-
-if [[ "$USE_UV" == true ]]; then
-    echo "Runner:  $UV_BIN run python"
-    echo "URL:     http://${RAG_HOST}:${RAG_PORT}"
-    if [[ -n "${VIRTUAL_ENV:-}" ]] || [[ -d "${HOME}/.venv" ]]; then
-        exec "$UV_BIN" run --active python "${UVICORN_ARGS[@]}"
-    fi
-    exec "$UV_BIN" run python "${UVICORN_ARGS[@]}"
-fi
-
-echo "Python:  $("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
-echo "Starting RAG server on http://${RAG_HOST}:${RAG_PORT}"
-echo "Staging: ${RAG_STAGING_DIR}"
-echo "State:   ${RAG_BUNDLE_STATE_DIR}"
-echo "Embedding: ${EMBEDDING_URL} (${EMBEDDING_MODEL})"
-
-exec "$PYTHON_BIN" "${UVICORN_ARGS[@]}"
+echo "List:    tmux ls"

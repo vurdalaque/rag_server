@@ -52,11 +52,12 @@ copy env.example .env
 ```bash
 # Linux / macOS
 cp env.example .env
-chmod +x start.sh
-./start.sh
+chmod +x start.sh start_server.sh start_evaluator.sh
+./start.sh          # tmux: server (+ evaluator if RETRIEVAL_DATABASE_URL set)
+# или без tmux: ./start_server.sh
 ```
 
-Скрипт читает `.env`, создаёт `data/staging` и `data/state`, запускает uvicorn.
+`start.sh` поднимает tmux-сессии; `start_server.sh` — только uvicorn в текущем shell.
 
 Сервер стартует **без индекса** — поиск будет пустым, пока не загрузите bundle через admin API или не укажете `RAG_INDEX_FILE` / `RAG_METADATA_FILE`.
 
@@ -68,18 +69,28 @@ chmod +x start.sh
 ```
 
 ```bash
-./start.sh --port 8010 --env-file .env.local
+./start_server.sh --port 8010 --env-file .env.local
+./start.sh --env-file .env.local --attach server
 ```
 
 ### tmux
 
-tmux запускает **non-interactive** shell: активный venv из prompt **не переносится**. Если `./start.sh` падает, сессия сразу закрывается (`[exited]`, `no sessions`).
+tmux запускает **non-interactive** shell: активный venv из prompt **не переносится**. Задайте `RAG_VENV=~/.venv` в `.env` и `pip install -e .` в **тот же** venv.
 
-Сначала проверьте ошибку напрямую:
+```bash
+./start.sh                    # radius-server (+ radius-evaluator при RETRIEVAL_DATABASE_URL)
+./start.sh --server-only
+./start.sh --evaluator-only
+./start.sh --foreground       # сервер без tmux (= start_server.sh)
+tmux attach -t radius-server
+tmux attach -t radius-evaluator
+```
+
+Проверка без tmux:
 
 ```bash
 cd ~/rag_server
-./start.sh
+./start_server.sh
 ```
 
 Частые причины:
@@ -94,23 +105,10 @@ RAG_VENV=~/.venv
 uv sync --active
 ```
 
-Запуск:
+Лог в файл (вручную):
 
 ```bash
-tmux new -d -s radius-server './start.sh'
-tmux attach -t radius-server
-```
-
-Если сессия сразу закрывается — запустите без tmux и посмотрите ошибку:
-
-```bash
-./start.sh
-```
-
-Или с логом:
-
-```bash
-tmux new -d -s radius-server './start.sh >>data/server.log 2>&1'
+tmux new -d -s radius-server './start_server.sh >>data/server.log 2>&1'
 tail -f data/server.log
 ```
 
