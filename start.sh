@@ -3,6 +3,7 @@
 #
 #   cp env.example .env && pip install -e .
 #   ./start.sh
+#   ./stop.sh
 #   tmux attach -t radius-server
 #
 # Foreground server (no tmux): ./start.sh --foreground  or  ./start_server.sh

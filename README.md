@@ -52,12 +52,13 @@ copy env.example .env
 ```bash
 # Linux / macOS
 cp env.example .env
-chmod +x start.sh start_server.sh start_evaluator.sh
+chmod +x start.sh stop.sh start_server.sh start_evaluator.sh
 ./start.sh          # tmux: server (+ evaluator if RETRIEVAL_DATABASE_URL set)
+./stop.sh           # kill radius-server / radius-evaluator tmux sessions
 # или без tmux: ./start_server.sh
 ```
 
-`start.sh` поднимает tmux-сессии; `start_server.sh` — только uvicorn в текущем shell.
+`start.sh` поднимает tmux-сессии; `stop.sh` их останавливает; `start_server.sh` — только uvicorn в текущем shell.
 
 Сервер стартует **без индекса** — поиск будет пустым, пока не загрузите bundle через admin API или не укажете `RAG_INDEX_FILE` / `RAG_METADATA_FILE`.
 
@@ -82,6 +83,7 @@ tmux запускает **non-interactive** shell: активный venv из pr
 ./start.sh --server-only
 ./start.sh --evaluator-only
 ./start.sh --foreground       # сервер без tmux (= start_server.sh)
+./stop.sh                     # обе сессии (те же --server-only / --evaluator-only)
 tmux attach -t radius-server
 tmux attach -t radius-evaluator
 ```

@@ -37,6 +37,15 @@ Direct (no tmux): ./start_server.sh  ./start_evaluator.sh
 EOF
 }
 
+start_lib_usage_stop() {
+    cat <<'EOF'
+stop.sh — stop tmux sessions started by ./start.sh
+
+  ./stop.sh [--env-file .env]
+  ./stop.sh --server-only | --evaluator-only
+EOF
+}
+
 start_lib_parse_server_args() {
     START_ENV_FILE=".env"
     START_HOST=""
@@ -116,6 +125,35 @@ start_lib_parse_stack_args() {
             --attach)
                 START_ATTACH="$2"
                 shift 2
+                ;;
+            *)
+                echo "Unknown argument: $1 (try --help)" >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
+start_lib_parse_stop_args() {
+    START_ENV_FILE=".env"
+    START_STACK_MODE="both"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                start_lib_usage_stop
+                exit 0
+                ;;
+            --env-file)
+                START_ENV_FILE="$2"
+                shift 2
+                ;;
+            --server-only)
+                START_STACK_MODE="server"
+                shift
+                ;;
+            --evaluator-only)
+                START_STACK_MODE="evaluator"
+                shift
                 ;;
             *)
                 echo "Unknown argument: $1 (try --help)" >&2
