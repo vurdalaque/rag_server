@@ -30,7 +30,6 @@ MCP = [
     "image_mcp_ops",
     "image_mcp_schemas",
     "image_mcp_tools",
-    "mcp_test_helpers",
 ]
 
 HEADER_I = '"""Backward-compatible shim; see radius_rag.imaging."""\n\n'

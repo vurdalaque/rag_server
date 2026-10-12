@@ -24,6 +24,18 @@ RETRIEVAL_DATABASE_URL=postgresql://user:pass@host:5432/dbname
 
 Migrations run on server startup when telemetry is enabled and DSN is set.
 
+### Integration tests (live database)
+
+```bash
+docker compose -f docker-compose.integration.yml up -d
+export RETRIEVAL_DATABASE_URL=postgresql://retrieval:retrieval@127.0.0.1:5433/retrieval
+python -m pytest tests/integration/test_retrieval_db.py -m integration -v
+```
+
+Requires `asyncpg` (installed with `pip install -e .`). Without `RETRIEVAL_DATABASE_URL`, integration DB tests are skipped.
+
+Observability modules use a **lazy** `asyncpg` import: importing `rag_server` or `retrieval_event` does not load the driver until the first DB call.
+
 ## Evaluator process
 
 ```bash

@@ -37,7 +37,6 @@ MCP_MODULES = [
     "image_mcp_ops",
     "image_mcp_schemas",
     "image_mcp_tools",
-    "mcp_test_helpers",
 ]
 
 CROSS = {

@@ -1,0 +1,20 @@
+# Optional Postgres + TimescaleDB for retrieval integration tests.
+#
+#   docker compose -f docker-compose.integration.yml up -d
+#   set RETRIEVAL_DATABASE_URL=postgresql://retrieval:retrieval@127.0.0.1:5433/retrieval
+#   python -m pytest tests/integration/test_retrieval_db.py -m integration -v
+
+services:
+  retrieval-db:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: retrieval
+      POSTGRES_PASSWORD: retrieval
+      POSTGRES_DB: retrieval
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U retrieval -d retrieval"]
+      interval: 3s
+      timeout: 5s
+      retries: 10

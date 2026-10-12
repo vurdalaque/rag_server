@@ -70,7 +70,7 @@ Root `image_*` and `comfy_*` → `src/radius_rag/imaging/<same module name>.py`.
 
 ## MCP image tools (done)
 
-`image_mcp_*`, `mcp_test_helpers` → `src/radius_rag/mcp/`.
+`image_mcp_*` → `src/radius_rag/mcp/`. MCP test helpers live in `tests/helpers/mcp_test_helpers.py` only.
 
 Regenerate: `python tools/migrate_imaging_mcp_package.py` + `python tools/write_imaging_mcp_shims.py`.
 
@@ -83,3 +83,13 @@ Regenerate: `python tools/migrate_imaging_mcp_package.py` + `python tools/write_
 `pytest` collects only `tests/` (`pyproject.toml`). Helpers: `tests/helpers/`.
 
 Regenerate shims: `python tools/migrate_*_package.py` + `python tools/write_*_shims.py`.
+
+## Why so many files?
+
+| Layer | Purpose |
+|-------|---------|
+| `src/radius_rag/**` | Canonical implementation (one copy of logic). |
+| Root `*.py` shims (~50) | Backward-compatible imports and `uvicorn rag_server:app`; listed in `pyproject.toml` `py-modules`. |
+| `tools/migrate_*` + `write_*_shims` | Regenerate after editing shims — do not hand-edit both trees. |
+| `data/` | Optional local overrides only; default Comfy workflow ships in `src/radius_rag/imaging/data/`. |
+| `conftest.py` (root + `tests/`) | Root: legacy; `tests/conftest.py`: pytest `testpaths` entry (both set `PYTHONPATH=src`). |
