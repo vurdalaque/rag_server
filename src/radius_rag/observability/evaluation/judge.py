@@ -15,7 +15,6 @@ from radius_rag.observability.candidate import (
     RetrievalCandidate,
     candidates_from_response_payload,
     candidates_from_trace,
-    extract_chunk_text,
 )
 from radius_rag.observability.config import RetrievalConfig, load_retrieval_config
 from radius_rag.observability.evaluation.quality_metrics import judge_ndcg_at_k, judge_precision_at_k
@@ -155,9 +154,15 @@ def validate_judge_response(parsed: dict[str, Any], chunk_count: int) -> dict[st
         relevance = entry.get("relevance")
         if not isinstance(chunk_index, int) or chunk_index < 0 or chunk_index >= chunk_count:
             raise ValueError("invalid chunk_index in per_chunk_scores")
+        if chunk_index in scores_by_index:
+            raise ValueError("duplicate chunk_index in per_chunk_scores")
         if not isinstance(relevance, int) or relevance < 0 or relevance > 3:
             raise ValueError("invalid relevance in per_chunk_scores")
         scores_by_index[chunk_index] = relevance
+
+    expected = set(range(chunk_count))
+    if set(scores_by_index.keys()) != expected:
+        raise ValueError("per_chunk_scores must include each chunk_index exactly once")
 
     context_sufficiency = parsed.get("context_sufficiency")
     if not isinstance(context_sufficiency, dict):
@@ -189,7 +194,7 @@ def validate_judge_response(parsed: dict[str, Any], chunk_count: int) -> dict[st
     if not isinstance(explanation, str):
         raise ValueError("explanation must be a string")
 
-    ordered_relevances = [scores_by_index.get(index, 0) for index in range(chunk_count)]
+    ordered_relevances = [scores_by_index[index] for index in range(chunk_count)]
     return {
         "per_chunk_scores": per_chunk,
         "context_sufficiency": context_sufficiency,
@@ -200,23 +205,66 @@ def validate_judge_response(parsed: dict[str, Any], chunk_count: int) -> dict[st
     }
 
 
-def _extract_candidates_from_event(event_row: dict[str, Any]) -> list[RetrievalCandidate]:
+_MISSING_CHUNK_TEXT = "[missing chunk text in snapshot]"
+
+
+def resolve_judge_candidate_sets(
+    event_row: dict[str, Any],
+) -> tuple[list[RetrievalCandidate], list[RetrievalCandidate], dict[str, Any]]:
+    """Return (final_top_k, candidate_pool, diagnostics) for judge input."""
     response_payload = event_row.get("response_payload") or {}
     if isinstance(response_payload, str):
         response_payload = json.loads(response_payload)
-    from_response = candidates_from_response_payload(response_payload)
-    if from_response:
-        return [c for c in from_response if c.text_present]
 
     trace = event_row.get("retrieval_trace") or {}
     if isinstance(trace, str):
         trace = json.loads(trace)
-    from_trace = candidates_from_trace(trace)
-    top_k = [c for c in from_trace if c.rank is not None and c.text_present]
-    if top_k:
-        return top_k
-    with_text = [c for c in from_trace if c.text_present]
-    return with_text
+
+    candidate_pool = candidates_from_trace(trace) if trace else []
+    final_top_k = candidates_from_response_payload(response_payload)
+    if not final_top_k and candidate_pool:
+        final_top_k = [c for c in candidate_pool if c.rank is not None]
+        final_top_k.sort(key=lambda c: (c.rank if c.rank is not None else 10_000))
+
+    missing_text = [
+        {
+            "metadata_index": c.metadata_index,
+            "stable_id": c.stable_id,
+            "rank": c.rank,
+        }
+        for c in final_top_k
+        if not c.text_present
+    ]
+    diagnostics = {
+        "final_top_k_size": len(final_top_k),
+        "candidate_pool_size": len(candidate_pool),
+        "missing_text_in_final_top_k": missing_text,
+    }
+    return final_top_k, candidate_pool, diagnostics
+
+
+def _candidates_for_judge_prompt(candidates: list[RetrievalCandidate]) -> list[RetrievalCandidate]:
+    """Keep rank/order; use explicit placeholder when snapshot text is absent."""
+    rendered: list[RetrievalCandidate] = []
+    for candidate in candidates:
+        if candidate.text_present:
+            rendered.append(candidate)
+            continue
+        rendered.append(
+            RetrievalCandidate(
+                metadata_index=candidate.metadata_index,
+                stable_id=candidate.stable_id,
+                rank=candidate.rank,
+                score=candidate.score,
+                text=_MISSING_CHUNK_TEXT,
+                text_present=False,
+                text_source_field=candidate.text_source_field,
+                code_hash=candidate.code_hash,
+                document_metadata=candidate.document_metadata,
+                raw=candidate.raw,
+            )
+        )
+    return rendered
 
 
 def _extract_query(event_row: dict[str, Any]) -> str:
@@ -301,18 +349,22 @@ async def run_judge_for_event(
 ) -> dict[str, Any]:
     cfg = config or load_retrieval_config()
     query = _extract_query(event_row)
-    candidates = _extract_candidates_from_event(event_row)
-    if not candidates:
+    final_top_k, candidate_pool, selection_diag = resolve_judge_candidate_sets(event_row)
+    if not final_top_k:
         return {
             "judge_model": cfg.judge_llm_model,
             "prompt_version": cfg.judge_prompt_version,
             "per_chunk_scores": [],
-            "context_sufficiency": {"sufficient": False, "missing_topics": ["chunk_text"]},
+            "context_sufficiency": {"sufficient": False, "missing_topics": ["final_top_k"]},
             "query_classification": {"category": "insufficient_context"},
             "aggregated_metrics": {},
-            "explanation": "No chunk text available in stored snapshot.",
+            "explanation": "No final_top_k candidates in stored snapshot.",
             "status": "failed",
-            "diagnostics": {"reason": "missing_chunk_text"},
+            "diagnostics": {
+                "reason": "empty_final_top_k",
+                **selection_diag,
+                "candidate_pool": [c.as_judge_dict() for c in candidate_pool],
+            },
             "truncation_info": TruncationInfo(
                 query_truncated=False,
                 chunks_truncated=0,
@@ -322,12 +374,38 @@ async def run_judge_for_event(
             ).as_dict(),
         }
 
-    messages, truncation = build_judge_messages(query, candidates, cfg)
+    if selection_diag.get("missing_text_in_final_top_k"):
+        return {
+            "judge_model": cfg.judge_llm_model,
+            "prompt_version": cfg.judge_prompt_version,
+            "per_chunk_scores": [],
+            "context_sufficiency": {"sufficient": False, "missing_topics": ["chunk_text"]},
+            "query_classification": {"category": "insufficient_context"},
+            "aggregated_metrics": {},
+            "explanation": "final_top_k contains chunks without stored text; evaluation incomplete.",
+            "status": "incomplete",
+            "diagnostics": {
+                "reason": "missing_chunk_text",
+                **selection_diag,
+                "evaluated_scope": "final_top_k",
+                "candidate_pool": [c.as_judge_dict() for c in candidate_pool],
+            },
+            "truncation_info": TruncationInfo(
+                query_truncated=False,
+                chunks_truncated=0,
+                chunks_included=0,
+                original_query_chars=len(query),
+                original_chunk_count=len(final_top_k),
+            ).as_dict(),
+        }
+
+    judge_candidates = _candidates_for_judge_prompt(final_top_k)
+    messages, truncation = build_judge_messages(query, judge_candidates, cfg)
 
     max_attempts = cfg.judge_json_max_retries + 1
     parsed: dict[str, Any] | None = None
     raw = ""
-    last_json_error: Exception | None = None
+    last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         raw = await judge_multimodal_chat(messages, cfg, client=client)
         try:
@@ -336,25 +414,22 @@ async def run_judge_for_event(
                 truncation.chunks_included,
             )
             break
-        except json.JSONDecodeError as error:
-            last_json_error = error
+        except (json.JSONDecodeError, ValueError) as error:
+            last_error = error
             if attempt >= max_attempts:
                 raise
             logger.warning(
-                "Judge returned invalid JSON (attempt %s/%s): %s",
+                "Judge response rejected (attempt %s/%s): %s",
                 attempt,
                 max_attempts,
                 error,
             )
 
     if parsed is None:
-        raise last_json_error or RuntimeError("judge produced no parsed response")
-
-    if len(parsed.get("per_chunk_scores", [])) != truncation.chunks_included:
-        raise ValueError("judge per_chunk_scores count does not match chunks sent")
+        raise last_error or RuntimeError("judge produced no parsed response")
 
     relevances = parsed["ordered_relevances"]
-    k = len(relevances)
+    k = len(final_top_k)
     aggregated = {
         "precision_at_k": judge_precision_at_k(
             relevances,
@@ -375,6 +450,12 @@ async def run_judge_for_event(
         "aggregated_metrics": aggregated,
         "explanation": parsed["explanation"],
         "status": "completed",
-        "diagnostics": {"raw_response_chars": len(raw)},
+        "diagnostics": {
+            "raw_response_chars": len(raw),
+            "evaluated_scope": "final_top_k",
+            **selection_diag,
+            "evaluated_candidates": [c.as_judge_dict() for c in final_top_k],
+            "candidate_pool_size": len(candidate_pool),
+        },
         "truncation_info": truncation.as_dict(),
     }

@@ -94,12 +94,16 @@ async def _iter_evaluated_events(
 ) -> AsyncIterator[tuple[dict[str, Any], dict[str, Any]]]:
     where, params = _event_where(criteria.filters)
     eval_clauses = ["ev.status = 'completed'"]
-    if criteria.judge.prompt_version:
-        params.append(criteria.judge.prompt_version)
-        eval_clauses.append(f"ev.prompt_version = ${len(params)}")
-    if criteria.judge.judge_model:
-        params.append(criteria.judge.judge_model)
-        eval_clauses.append(f"ev.judge_model = ${len(params)}")
+    if criteria.judge.evaluation_version:
+        params.append(criteria.judge.evaluation_version)
+        eval_clauses.append(f"ev.evaluation_version = ${len(params)}")
+    else:
+        if criteria.judge.prompt_version:
+            params.append(criteria.judge.prompt_version)
+            eval_clauses.append(f"ev.prompt_version = ${len(params)}")
+        if criteria.judge.judge_model:
+            params.append(criteria.judge.judge_model)
+            eval_clauses.append(f"ev.judge_model = ${len(params)}")
     if criteria.require_context_sufficient:
         eval_clauses.append("(ev.context_sufficiency->>'sufficient')::boolean IS TRUE")
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 from radius_rag.observability.config import TELEMETRY_ENABLED, load_retrieval_config
@@ -15,6 +14,7 @@ from radius_rag.observability.context import (
     new_request_id,
 )
 from radius_rag.observability.sanitize import sanitize_payload
+from radius_rag.observability.snapshot import prepare_frozen_snapshot_input
 from radius_rag.observability.telemetry.writer import emit
 
 
@@ -59,14 +59,14 @@ def maybe_emit_retrieval_event(
         "status": status,
         "error_type": error_type,
         "metadata": metadata,
-        "snapshot_input": {
-            "rag_service": rag_service,
-            "query": query,
-            "results": copy.deepcopy(results or []),
-            "trace_kwargs": copy.deepcopy(trace_kwargs or {}),
-            "request_payload": request_payload,
-            "retrieval_config_snapshot": retrieval_config_snapshot or {},
-            "embedding_model": embedding_model,
-        },
+        "snapshot_input": prepare_frozen_snapshot_input(
+            rag_service=rag_service,
+            query=query,
+            results=results or [],
+            trace_kwargs=trace_kwargs or {},
+            request_payload=request_payload,
+            retrieval_config_snapshot=retrieval_config_snapshot or {},
+            embedding_model=embedding_model,
+        ),
     }
     emit(pending)

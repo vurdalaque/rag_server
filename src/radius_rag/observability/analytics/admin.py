@@ -176,7 +176,13 @@ def register_retrieval_admin_routes(
             raise HTTPException(status_code=404, detail="retrieval event not found")
 
         version = judge_version or cfg.evaluation_version
-        inserted = await enqueue_evaluation_job(event_id, created_at, version)
+        inserted = await enqueue_evaluation_job(
+            event_id,
+            created_at,
+            version,
+            max_attempts=cfg.max_retries + 1,
+            reset_terminal=True,
+        )
         return {
             "event_id": str(event_id),
             "event_created_at": created_at.isoformat(),

@@ -100,16 +100,18 @@ def test_run_judge_retries_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None
     assert len(calls) == 2
 
 
-def test_run_judge_does_not_retry_validation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = _test_config(judge_json_max_retries=3)
+def test_run_judge_retries_validation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _test_config(judge_json_max_retries=2)
     calls = 0
 
     async def fake_chat(*_args: Any, **_kwargs: Any) -> str:
         nonlocal calls
         calls += 1
-        bad = _valid_judge_payload(1)
-        bad["per_chunk_scores"][0]["chunk_index"] = 9
-        return json.dumps(bad)
+        if calls == 1:
+            bad = _valid_judge_payload(1)
+            bad["per_chunk_scores"] = []
+            return json.dumps(bad)
+        return json.dumps(_valid_judge_payload(1))
 
     monkeypatch.setattr(
         "radius_rag.observability.evaluation.judge.judge_multimodal_chat",
@@ -120,6 +122,6 @@ def test_run_judge_does_not_retry_validation_errors(monkeypatch: pytest.MonkeyPa
         "request_payload": {"query": "q"},
         "response_payload": {"sources": [{"code": "chunk", "file": "a.py"}]},
     }
-    with pytest.raises(ValueError, match="chunk_index"):
-        asyncio.run(run_judge_for_event(event, cfg))
-    assert calls == 1
+    result = asyncio.run(run_judge_for_event(event, cfg))
+    assert result["status"] == "completed"
+    assert calls == 2

@@ -11,7 +11,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from radius_rag.observability.config import RetrievalConfig, load_retrieval_config
-from radius_rag.observability.storage.db import enqueue_evaluation_job, insert_events
+from radius_rag.observability.storage.db import (
+    enqueue_evaluation_job,
+    insert_events,
+    reconcile_missing_evaluation_jobs,
+)
 from radius_rag.observability.snapshot import finalize_pending_event
 from radius_rag.observability.telemetry.metrics import (
     record_batch_written,
@@ -106,18 +110,25 @@ async def _flush_batch(batch: list[dict[str, Any]]) -> None:
         logger.exception("Failed to persist retrieval telemetry batch (%s events)", len(materialized))
         return
 
-    if not cfg.evaluation_auto_enqueue:
-        return
-
     saved = [event for event in materialized if event.get("event_id")]
+    if cfg.evaluation_auto_enqueue:
+        try:
+            await _enqueue_jobs_for_events(saved, cfg)
+        except Exception as error:
+            record_enqueue_error(type(error).__name__)
+            logger.exception(
+                "Evaluation job enqueue failed after persisting %s events",
+                len(saved),
+            )
+
     try:
-        await _enqueue_jobs_for_events(saved, cfg)
-    except Exception as error:
-        record_enqueue_error(type(error).__name__)
-        logger.exception(
-            "Evaluation job enqueue failed after persisting %s events",
-            len(saved),
+        await reconcile_missing_evaluation_jobs(
+            cfg.evaluation_version,
+            limit=max(cfg.batch_size * 5, 50),
+            max_attempts=cfg.max_retries + 1,
         )
+    except Exception:
+        logger.exception("Evaluation job reconciliation failed")
 
 
 async def start_retrieval_telemetry(config: RetrievalConfig | None = None) -> None:

@@ -159,6 +159,7 @@ async def enqueue_evaluation_job(
     evaluation_version: str,
     *,
     max_attempts: int | None = None,
+    reset_terminal: bool = False,
 ) -> bool:
     pool = await get_pool()
     if isinstance(event_id, str):
@@ -166,6 +167,31 @@ async def enqueue_evaluation_job(
     max_att = max_attempts if max_attempts is not None else 3
 
     async with pool.acquire() as connection:
+        if reset_terminal:
+            reset = await connection.execute(
+                """
+                UPDATE retrieval_obs.evaluation_jobs
+                SET status = 'pending',
+                    attempts = 0,
+                    lease_expires_at = NULL,
+                    lease_token = NULL,
+                    next_attempt_at = NULL,
+                    last_error = NULL,
+                    event_created_at = $3,
+                    max_attempts = $4,
+                    updated_at = now()
+                WHERE event_id = $1
+                  AND evaluation_version = $2
+                  AND status IN ('failed', 'dead')
+                """,
+                event_id,
+                evaluation_version,
+                event_created_at,
+                max_att,
+            )
+            if reset.endswith("1"):
+                return True
+
         status = await connection.fetchval(
             """
             INSERT INTO retrieval_obs.evaluation_jobs (
@@ -181,6 +207,42 @@ async def enqueue_evaluation_job(
             max_att,
         )
     return status is not None
+
+
+async def reconcile_missing_evaluation_jobs(
+    evaluation_version: str,
+    *,
+    limit: int = 100,
+    max_attempts: int = 3,
+) -> int:
+    """Create pending jobs for stored events that have no job for this evaluator version."""
+    if limit <= 0:
+        return 0
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            INSERT INTO retrieval_obs.evaluation_jobs (
+                event_id, event_created_at, evaluation_version, status, max_attempts
+            )
+            SELECT e.event_id, e.created_at, $1, 'pending', $3
+            FROM retrieval_obs.retrieval_events e
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM retrieval_obs.evaluation_jobs j
+                WHERE j.event_id = e.event_id
+                  AND j.evaluation_version = $1
+            )
+            ORDER BY e.created_at DESC
+            LIMIT $2
+            ON CONFLICT (event_id, evaluation_version) DO NOTHING
+            RETURNING job_id
+            """,
+            evaluation_version,
+            limit,
+            max_attempts,
+        )
+    return len(rows)
 
 
 async def enqueue_evaluation_jobs_bulk(
@@ -202,6 +264,31 @@ async def enqueue_evaluation_jobs_bulk(
     return int(row["inserted_count"]), int(row["skipped_count"])
 
 
+async def mark_exhausted_evaluation_jobs(evaluation_version: str) -> int:
+    """Terminalize jobs that exceeded max_attempts (e.g. after worker crash)."""
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        result = await connection.execute(
+            """
+            UPDATE retrieval_obs.evaluation_jobs
+            SET status = 'dead',
+                lease_expires_at = NULL,
+                lease_token = NULL,
+                last_error = COALESCE(last_error, 'max attempts exceeded'),
+                updated_at = now()
+            WHERE evaluation_version = $1
+              AND status IN ('pending', 'leased', 'running')
+              AND attempts >= max_attempts
+            """,
+            evaluation_version,
+        )
+    # asyncpg returns "UPDATE N"
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 async def claim_evaluation_jobs(
     evaluation_version: str,
     limit: int,
@@ -213,12 +300,27 @@ async def claim_evaluation_jobs(
 
     async with pool.acquire() as connection:
         async with connection.transaction():
+            await connection.execute(
+                """
+                UPDATE retrieval_obs.evaluation_jobs
+                SET status = 'dead',
+                    lease_expires_at = NULL,
+                    lease_token = NULL,
+                    last_error = COALESCE(last_error, 'max attempts exceeded'),
+                    updated_at = now()
+                WHERE evaluation_version = $1
+                  AND status IN ('pending', 'leased', 'running')
+                  AND attempts >= max_attempts
+                """,
+                evaluation_version,
+            )
             rows = await connection.fetch(
                 """
                 SELECT job_id, event_id, event_created_at, evaluation_version, attempts, max_attempts
                 FROM retrieval_obs.evaluation_jobs
                 WHERE evaluation_version = $1
                   AND status IN ('pending', 'leased', 'running')
+                  AND attempts < max_attempts
                   AND (next_attempt_at IS NULL OR next_attempt_at <= now())
                   AND (lease_expires_at IS NULL OR lease_expires_at < now())
                 ORDER BY created_at
@@ -360,6 +462,130 @@ async def fetch_retrieval_event(
         )
 
 
+class EvaluationCommitLeaseError(RuntimeError):
+    """Job lease invalid or lost; transaction rolled back (no evaluation persisted)."""
+
+
+async def commit_evaluation_and_complete_job(
+    job_id: int,
+    lease_token: UUID,
+    row: dict[str, Any],
+) -> bool:
+    """Atomically verify lease, insert evaluation (idempotent), and complete the job."""
+    pool = await get_pool()
+    evaluation_id = row.get("evaluation_id")
+    if evaluation_id is not None and isinstance(evaluation_id, str):
+        evaluation_id = UUID(evaluation_id)
+
+    event_id = row["event_id"]
+    if isinstance(event_id, str):
+        event_id = UUID(event_id)
+
+    prompt_version = row["prompt_version"]
+    judge_model = row["judge_model"]
+    evaluation_version = row.get("evaluation_version")
+    if not evaluation_version:
+        from radius_rag.observability.evaluation.identity import build_evaluation_version
+
+        evaluation_version = build_evaluation_version(prompt_version, judge_model)
+
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            job = await connection.fetchrow(
+                """
+                SELECT job_id, event_id, event_created_at, evaluation_version,
+                       status, lease_expires_at
+                FROM retrieval_obs.evaluation_jobs
+                WHERE job_id = $1 AND lease_token = $2
+                FOR UPDATE
+                """,
+                job_id,
+                lease_token,
+            )
+            if job is None:
+                return False
+
+            if job["status"] not in ("running", "leased"):
+                return False
+
+            lease_expires = job["lease_expires_at"]
+            if lease_expires is not None and lease_expires <= _utcnow():
+                return False
+
+            if job["event_id"] != event_id:
+                raise EvaluationCommitLeaseError("event_id does not match job")
+
+            if job["evaluation_version"] != evaluation_version:
+                raise EvaluationCommitLeaseError("evaluation_version does not match job")
+
+            existing = await connection.fetchval(
+                """
+                SELECT evaluation_id
+                FROM retrieval_obs.retrieval_evaluations
+                WHERE event_id = $1
+                  AND event_created_at = $2
+                  AND evaluation_version = $3
+                  AND status = 'completed'
+                LIMIT 1
+                """,
+                event_id,
+                row["event_created_at"],
+                evaluation_version,
+            )
+            if existing is None:
+                eval_id = evaluation_id or await connection.fetchval("SELECT gen_random_uuid()")
+                await connection.execute(
+                    """
+                    INSERT INTO retrieval_obs.retrieval_evaluations (
+                        evaluation_id, event_id, event_created_at,
+                        evaluation_version, judge_model, prompt_version,
+                        per_chunk_scores, context_sufficiency, query_classification,
+                        aggregated_metrics, explanation, status, diagnostics, truncation_info
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6,
+                        $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb,
+                        $11, $12, $13::jsonb, $14::jsonb
+                    )
+                    """,
+                    eval_id,
+                    event_id,
+                    row["event_created_at"],
+                    evaluation_version,
+                    judge_model,
+                    prompt_version,
+                    json.dumps(row.get("per_chunk_scores") or []),
+                    json.dumps(row.get("context_sufficiency") or {}),
+                    json.dumps(row.get("query_classification") or {}),
+                    json.dumps(row.get("aggregated_metrics") or {}),
+                    row.get("explanation"),
+                    row.get("status", "completed"),
+                    json.dumps(row.get("diagnostics") or {}),
+                    json.dumps(row.get("truncation_info") or {}),
+                )
+
+            result = await connection.execute(
+                """
+                UPDATE retrieval_obs.evaluation_jobs
+                SET status = 'completed',
+                    lease_expires_at = NULL,
+                    lease_token = NULL,
+                    last_error = NULL,
+                    next_attempt_at = NULL,
+                    updated_at = now()
+                WHERE job_id = $1
+                  AND lease_token = $2
+                  AND status IN ('running', 'leased')
+                  AND (lease_expires_at IS NULL OR lease_expires_at > now())
+                """,
+                job_id,
+                lease_token,
+            )
+            if not result.endswith("1"):
+                raise EvaluationCommitLeaseError("lease lost before job completion")
+    return True
+
+
 async def insert_evaluation(row: dict[str, Any]) -> UUID:
     pool = await get_pool()
     evaluation_id = row.get("evaluation_id")
@@ -372,24 +598,34 @@ async def insert_evaluation(row: dict[str, Any]) -> UUID:
     if isinstance(event_id, str):
         event_id = UUID(event_id)
 
+    evaluation_version = row.get("evaluation_version")
+    if not evaluation_version:
+        from radius_rag.observability.evaluation.identity import build_evaluation_version
+
+        evaluation_version = build_evaluation_version(
+            row["prompt_version"],
+            row["judge_model"],
+        )
+
     async with pool.acquire() as connection:
         await connection.execute(
             """
             INSERT INTO retrieval_obs.retrieval_evaluations (
                 evaluation_id, event_id, event_created_at,
-                judge_model, prompt_version,
+                evaluation_version, judge_model, prompt_version,
                 per_chunk_scores, context_sufficiency, query_classification,
                 aggregated_metrics, explanation, status, diagnostics, truncation_info
             )
             VALUES (
-                $1, $2, $3, $4, $5,
-                $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb,
-                $10, $11, $12::jsonb, $13::jsonb
+                $1, $2, $3, $4, $5, $6,
+                $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb,
+                $11, $12, $13::jsonb, $14::jsonb
             )
             """,
             evaluation_id,
             event_id,
             row["event_created_at"],
+            evaluation_version,
             row["judge_model"],
             row["prompt_version"],
             json.dumps(row.get("per_chunk_scores") or []),

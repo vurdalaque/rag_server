@@ -38,10 +38,21 @@ class JudgeVersionFilter:
     def parse(cls, evaluation_version: str | None) -> JudgeVersionFilter:
         if not evaluation_version:
             return cls()
-        if ":" in evaluation_version:
-            prompt, model = evaluation_version.split(":", 1)
-            return cls(prompt_version=prompt or None, judge_model=model or None)
-        return cls(prompt_version=evaluation_version)
+        from radius_rag.observability.evaluation.identity import EvaluationIdentity
+
+        ident = EvaluationIdentity.parse(evaluation_version)
+        return cls(
+            prompt_version=ident.prompt_version or None,
+            judge_model=ident.judge_model or None,
+        )
+
+    @property
+    def evaluation_version(self) -> str | None:
+        from radius_rag.observability.evaluation.identity import build_evaluation_version
+
+        if self.prompt_version and self.judge_model:
+            return build_evaluation_version(self.prompt_version, self.judge_model)
+        return None
 
 
 def _append_filter(
@@ -80,8 +91,11 @@ def _eval_where(
         f"ON e.event_id = {alias}.event_id AND e.created_at = {alias}.event_created_at "
     )
     clauses = [where, f"{alias}.status = 'completed'"]
-    _append_filter(clauses, params, f"{alias}.prompt_version", judge.prompt_version)
-    _append_filter(clauses, params, f"{alias}.judge_model", judge.judge_model)
+    if judge.evaluation_version:
+        _append_filter(clauses, params, f"{alias}.evaluation_version", judge.evaluation_version)
+    else:
+        _append_filter(clauses, params, f"{alias}.prompt_version", judge.prompt_version)
+        _append_filter(clauses, params, f"{alias}.judge_model", judge.judge_model)
     return join, " AND ".join(clauses), params
 
 
@@ -177,8 +191,11 @@ async def fetch_coverage(
     _append_filter(eval_clauses, eval_params, "e.embedding_model", filters.embedding_model)
     _append_filter(eval_clauses, eval_params, "e.index_staging_id", filters.index_staging_id)
     _append_filter(eval_clauses, eval_params, "e.request_source", filters.request_source)
-    _append_filter(eval_clauses, eval_params, "ev.prompt_version", judge.prompt_version)
-    _append_filter(eval_clauses, eval_params, "ev.judge_model", judge.judge_model)
+    if judge.evaluation_version:
+        _append_filter(eval_clauses, eval_params, "ev.evaluation_version", judge.evaluation_version)
+    else:
+        _append_filter(eval_clauses, eval_params, "ev.prompt_version", judge.prompt_version)
+        _append_filter(eval_clauses, eval_params, "ev.judge_model", judge.judge_model)
 
     evaluated = await pool.fetchval(
         f"""
