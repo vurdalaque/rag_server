@@ -56,11 +56,18 @@ Regenerate: `python tools/migrate_rag_package.py` + `python tools/write_rag_shim
 
 Regenerate: `python tools/migrate_llm_package.py` + `python tools/write_llm_shims.py`.
 
+## API (done)
+
+| Legacy shim | Implementation |
+|-------------|----------------|
+| `rag_server.py` | `src/radius_rag/api/server.py` (`uvicorn rag_server:app` unchanged) |
+
+Regenerate: `python tools/migrate_api_package.py`.
+
 ## Planned
 
 | Legacy | Target |
 |--------|--------|
-| `rag_server.py` | `radius_rag.api.*` |
 | `image_*`, `comfy_*` | `radius_rag.imaging.*` |
 | `image_mcp_tools.py` | `radius_rag.mcp.*` |
 

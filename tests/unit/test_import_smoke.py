@@ -20,6 +20,13 @@ def test_radius_rag_rag_import() -> None:
     assert BundleStore is not None
 
 
+def test_rag_server_shim_exports_app() -> None:
+    pytest.importorskip("asyncpg")
+    from rag_server import app
+
+    assert app is not None
+
+
 def test_legacy_retrieval_shims() -> None:
     pytest.importorskip("asyncpg")
     from retrieval_db import insert_events, run_migrations
