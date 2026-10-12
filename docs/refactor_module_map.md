@@ -64,11 +64,19 @@ Regenerate: `python tools/migrate_llm_package.py` + `python tools/write_llm_shim
 
 Regenerate: `python tools/migrate_api_package.py`.
 
+## Imaging (done)
+
+Root `image_*` and `comfy_*` → `src/radius_rag/imaging/<same module name>.py`.
+
+## MCP image tools (done)
+
+`image_mcp_*`, `mcp_test_helpers` → `src/radius_rag/mcp/`.
+
+Regenerate: `python tools/migrate_imaging_mcp_package.py` + `python tools/write_imaging_mcp_shims.py`.
+
 ## Planned
 
 | Legacy | Target |
 |--------|--------|
-| `image_*`, `comfy_*` | `radius_rag.imaging.*` |
-| `image_mcp_tools.py` | `radius_rag.mcp.*` |
 
 Regenerate shims after moves: `python tools/migrate_observability_package.py` (copy) + `python tools/write_retrieval_shims.py`.

@@ -1,0 +1,174 @@
+"""Structured errors for image generation (MCP-friendly codes)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class ImageGenerationError(Exception):
+    """Base error with a stable machine-readable code."""
+
+    code: str
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return self.message
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "error": self.code,
+            "message": self.message,
+        }
+        if self.details:
+            payload["details"] = self.details
+        return payload
+
+
+class InvalidRequestError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_request", message, details)
+
+
+class InvalidReferenceImageError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_reference_image", message, details)
+
+
+class InvalidMaskImageError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_mask", message, details)
+
+
+class InvalidSketchImageError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_sketch", message, details)
+
+
+class UnsupportedParameterError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("unsupported_parameter", message, details)
+
+
+class TooManyImagesError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("too_many_images", message, details)
+
+
+class UnsupportedMimeTypeError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("unsupported_image_mime", message, details)
+
+
+class InputTooLargeError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("input_too_large", message, details)
+
+
+class SafetyRejectedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("safety_rejected", message, details)
+
+
+class SafetyBackendError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("safety_backend_failure", message, details)
+
+
+class BackendUnavailableError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("backend_unavailable", message, details)
+
+
+class ComfyUIUnavailableError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("comfyui_unavailable", message, details)
+
+
+class ComfyUIWorkflowRejectedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("comfyui_workflow_rejected", message, details)
+
+
+class AnalysisFailedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("analysis_failed", message, details)
+
+
+class ExecutionFailedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("execution_failed", message, details)
+
+
+class ImageGenerationTimeoutError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("timeout", message, details)
+
+
+class CancelledError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("cancelled", message, details)
+
+
+class OutputMissingError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("output_missing", message, details)
+
+
+class OutputInvalidError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("output_invalid", message, details)
+
+
+class OutputTooLargeError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("output_too_large", message, details)
+
+
+class InternalImageGenerationError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("internal_error", message, details)
+
+
+class SegmentationFailedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("segmentation_failed", message, details)
+
+
+class InvalidSegmentationInputError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("invalid_segmentation_input", message, details)
+
+
+class NotFoundError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("not_found", message, details)
+
+
+class UpscaleFailedError(ImageGenerationError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__("upscale_failed", message, details)
+
+
+_PUBLIC_ERROR_CODE_ALIASES: dict[str, str] = {
+    "execution_failed": "generation_failed",
+    "output_missing": "generation_failed",
+    "output_invalid": "generation_failed",
+    "comfyui_unavailable": "backend_unavailable",
+    "comfyui_workflow_rejected": "backend_error",
+    "internal_error": "backend_error",
+    "safety_backend_failure": "backend_error",
+    "too_many_images": "invalid_request",
+    "unsupported_image_mime": "invalid_request",
+    "input_too_large": "invalid_request",
+    "invalid_segmentation_input": "invalid_request",
+    "cancelled": "invalid_request",
+    "upscale_failed": "backend_error",
+}
+
+
+def public_error_code(error: ImageGenerationError) -> str:
+    """Map internal/stable codes to the public MCP v1 error vocabulary."""
+    return _PUBLIC_ERROR_CODE_ALIASES.get(error.code, error.code)
