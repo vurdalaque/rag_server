@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-import rag_service as rag_service_module
+import radius_rag.rag.service as rag_service_module
 from rag_service import RagService
 
 import rag_server

@@ -1,0 +1,22 @@
+-- Manual compression setup (use when 005_compression_policies.sql is skipped or compress_after must be set first).
+--
+-- 1) Set interval (example: 14 days):
+--    UPDATE retrieval_obs.migration_config
+--    SET value = '14 days', updated_at = now()
+--    WHERE key = 'retrieval_events_compress_after';
+--
+-- 2) Ensure TimescaleDB >= 2.0 and retrieval_events is a hypertable.
+--
+-- 3) Run:
+
+ALTER TABLE retrieval_obs.retrieval_events SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'request_source',
+    timescaledb.compress_orderby = 'created_at DESC'
+);
+
+SELECT add_compression_policy(
+    'retrieval_obs.retrieval_events',
+    (SELECT value::interval FROM retrieval_obs.migration_config WHERE key = 'retrieval_events_compress_after'),
+    if_not_exists => TRUE
+);

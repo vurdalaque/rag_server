@@ -18,6 +18,7 @@ dependencies = [
     "prometheus-client>=0.21,<1",
     "websockets>=14,<16",
     "Pillow>=10,<12",
+    "asyncpg>=0.30,<1",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +29,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = []
+packages = { find = { where = ["src"] } }
 py-modules = [
     "comfy_client",
     "comfy_workflow",
@@ -60,7 +61,28 @@ py-modules = [
     "rag_search",
     "rag_server",
     "rag_service",
+    "retrieval_config",
+    "retrieval_context",
+    "retrieval_db",
+    "retrieval_eval_worker",
+    "retrieval_evaluator",
+    "retrieval_admin",
+    "retrieval_analytics",
+    "retrieval_export",
+    "retrieval_event",
+    "retrieval_index_info",
+    "retrieval_judge",
+    "retrieval_quality_metrics",
+    "retrieval_telemetry",
+    "retrieval_telemetry_metrics",
+    "retrieval_trace",
+    "retrieval_candidate",
+    "retrieval_snapshot",
+    "retrieval_sanitize",
 ]
+
+[project.scripts]
+radius-rag-evaluator = "radius_rag.observability.evaluation.entrypoint:main"
 
 [tool.ruff]
 line-length = 100
@@ -90,4 +112,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = "--ignore=test_mcp_long_tool_worker.py"
-markers = ["acceptance: requires a live ComfyUI backend"]
+markers = [
+    "acceptance: requires a live ComfyUI backend",
+    "integration: requires RETRIEVAL_DATABASE_URL (TimescaleDB/PostgreSQL)",
+]

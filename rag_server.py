@@ -59,6 +59,11 @@ from rag_service import (
     REQUEST_TIMEOUT,
     rag_service,
 )
+from retrieval_admin import register_retrieval_admin_routes
+from retrieval_config import load_retrieval_config
+from retrieval_context import new_request_id, retrieval_context
+from retrieval_db import close_pool, run_migrations
+from retrieval_telemetry import start_retrieval_telemetry, stop_retrieval_telemetry
 
 # Module-level image backend set by init_image_generation() during lifespan.
 image_backend: Any | None = None
@@ -193,14 +198,30 @@ async def search_project(
 
     Do not repeat equivalent searches when no relevant results are found.
     """
-    results = await rag_service.retrieve(
-        query=query,
-        top_k=top_k,
-        source_type=source_type,
-        language=language,
-        path_prefix=path_prefix,
-        repo=repo,
-    )
+    with retrieval_context(
+        request_source="mcp.search_project",
+        request_payload={
+            "query": query,
+            "top_k": top_k,
+            "source_type": source_type,
+            "language": language,
+            "path_prefix": path_prefix,
+            "repo": repo,
+        },
+        response_payload_builder=lambda base: {
+            **base,
+            "query": query,
+            "searched_sources": base.get("searched_sources", []),
+        },
+    ):
+        results = await rag_service.retrieve(
+            query=query,
+            top_k=top_k,
+            source_type=source_type,
+            language=language,
+            path_prefix=path_prefix,
+            repo=repo,
+        )
 
     if not rag_service.index_loaded:
         return {
@@ -402,14 +423,26 @@ async def ask_project(
     Prefer search_project when the calling client already has
     access to the Project language model and can produce the answer itself.
     """
-    return await rag_service.ask(
-        question=question,
-        top_k=top_k,
-        source_type=source_type,
-        language=language,
-        path_prefix=path_prefix,
-        repo=repo,
-    )
+    with retrieval_context(
+        request_source="mcp.ask_project",
+        request_payload={
+            "question": question,
+            "top_k": top_k,
+            "source_type": source_type,
+            "language": language,
+            "path_prefix": path_prefix,
+            "repo": repo,
+        },
+        response_payload_builder=lambda base: dict(base),
+    ):
+        return await rag_service.ask(
+            question=question,
+            top_k=top_k,
+            source_type=source_type,
+            language=language,
+            path_prefix=path_prefix,
+            repo=repo,
+        )
 
 
 
@@ -537,6 +570,11 @@ async def lifespan(_: FastAPI):
 
     await init_image_generation()
 
+    retrieval_cfg = load_retrieval_config()
+    if retrieval_cfg.telemetry_ready():
+        await run_migrations(retrieval_cfg)
+        await start_retrieval_telemetry(retrieval_cfg)
+
     try:
         # Stop metrics probes before tearing down MCP (probe was previously outer
         # and kept hitting ComfyUI during session_manager shutdown).
@@ -544,6 +582,8 @@ async def lifespan(_: FastAPI):
             async with dependency_probe_loop(SEARXNG_URL):
                 yield
     finally:
+        await stop_retrieval_telemetry()
+        await close_pool()
         await shutdown_image_generation()
 
 
@@ -552,6 +592,29 @@ app = FastAPI(
     version="1.1.0",
     lifespan=lifespan,
 )
+
+register_retrieval_admin_routes(app, require_admin)
+
+
+@app.middleware("http")
+async def retrieval_http_context(
+    request: Request,
+    call_next,
+):
+    if request.url.path.startswith("/mcp"):
+        return await call_next(request)
+
+    correlation_id = request.headers.get("x-correlation-id")
+    request_id = request.headers.get("x-request-id") or new_request_id()
+    if correlation_id is None:
+        correlation_id = request.headers.get("x-request-id") or request_id
+
+    with retrieval_context(
+        correlation_id=correlation_id,
+        request_id=request_id,
+    ):
+        return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -897,14 +960,25 @@ async def debug_search(
     path_prefix: str | None = None,
     repo: str | None = None,
 ) -> dict[str, Any]:
-    results = await rag_service.retrieve(
-        query=query,
-        top_k=top_k,
-        source_type=source_type,
-        language=language,
-        path_prefix=path_prefix,
-        repo=repo,
-    )
+    with retrieval_context(
+        request_source="debug",
+        request_payload={
+            "query": query,
+            "top_k": top_k,
+            "source_type": source_type,
+            "language": language,
+            "path_prefix": path_prefix,
+            "repo": repo,
+        },
+    ):
+        results = await rag_service.retrieve(
+            query=query,
+            top_k=top_k,
+            source_type=source_type,
+            language=language,
+            path_prefix=path_prefix,
+            repo=repo,
+        )
 
     return {
         "query": query,
@@ -974,19 +1048,33 @@ async def chat_completions(
     stream = bool(body.get("stream", False))
 
     try:
-        enriched_messages, sources = (
-            await rag_service.prepare_messages(
-                messages=messages,
-                query=query,
-                top_k=requested_top_k,
-                source_type=source_type,
-                language=language,
-                path_prefix=path_prefix,
-                repo=repo,
-                use_system_prompt=rag_use_system_prompt,
+        with retrieval_context(
+            request_source="http.chat_completions",
+            request_payload={
+                "query": query,
+                "rag_top_k": requested_top_k,
+                "rag_source_type": source_type,
+                "rag_language": language,
+                "rag_path_prefix": path_prefix,
+                "rag_repo": repo,
+                "rag_use_system_prompt": rag_use_system_prompt,
+                "stream": stream,
+                "messages": messages,
+            },
+        ):
+            enriched_messages, sources = (
+                await rag_service.prepare_messages(
+                    messages=messages,
+                    query=query,
+                    top_k=requested_top_k,
+                    source_type=source_type,
+                    language=language,
+                    path_prefix=path_prefix,
+                    repo=repo,
+                    use_system_prompt=rag_use_system_prompt,
 
+                )
             )
-        )
 
     except httpx.RequestError as error:
         record_chat_completion(
@@ -1319,7 +1407,12 @@ def wrap_mcp_lifecycle_logging(app: ASGIApp) -> ASGIApp:
 
         outcome = "success"
         try:
-            await app(scope, receive, lifecycle_send)
+            with retrieval_context(
+                request_id=new_request_id(),
+                correlation_id=state["correlation_id"],
+                session_id=state.get("session_id"),
+            ):
+                await app(scope, receive, lifecycle_send)
         except BaseException:
             outcome = "error"
             raise
