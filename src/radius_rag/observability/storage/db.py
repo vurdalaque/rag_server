@@ -9,25 +9,25 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-import asyncpg
-
 from radius_rag.observability.config import RetrievalConfig, load_retrieval_config
+from radius_rag.observability.storage._asyncpg import load_asyncpg
 
 logger = logging.getLogger(__name__)
 
-_pool: asyncpg.Pool | None = None
+_pool: Any = None
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def get_pool(config: RetrievalConfig | None = None) -> asyncpg.Pool:
+async def get_pool(config: RetrievalConfig | None = None) -> Any:
     global _pool
     cfg = config or load_retrieval_config()
     if not cfg.database_url:
         raise RuntimeError("RETRIEVAL_DATABASE_URL is not configured")
     if _pool is None:
+        asyncpg = load_asyncpg()
         _pool = await asyncpg.create_pool(
             cfg.database_url,
             min_size=1,
@@ -49,7 +49,8 @@ def _migration_files(migrations_dir: Path) -> list[Path]:
     return [path for path in files if not path.name.endswith(".template")]
 
 
-async def _fetch_applied_versions(connection: asyncpg.Connection) -> set[str]:
+async def _fetch_applied_versions(connection: Any) -> set[str]:
+    asyncpg = load_asyncpg()
     try:
         rows = await connection.fetch(
             "SELECT version FROM retrieval_obs.schema_migrations ORDER BY version"
@@ -342,7 +343,7 @@ async def finish_evaluation_job(
 async def fetch_retrieval_event(
     event_id: UUID | str,
     event_created_at: datetime,
-) -> asyncpg.Record | None:
+) -> Any | None:
     if isinstance(event_id, str):
         event_id = UUID(event_id)
     pool = await get_pool()

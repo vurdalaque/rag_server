@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from uuid import UUID
-
-import asyncpg
 
 from radius_rag.observability.config import RetrievalConfig, load_retrieval_config
 from radius_rag.observability.storage.db import get_pool
@@ -87,7 +85,7 @@ def _eval_where(
     return join, " AND ".join(clauses), params
 
 
-def _row_to_json(row: asyncpg.Record) -> dict[str, Any]:
+def _row_to_json(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: _serialize_value(row[key]) for key in row.keys()}
 
 
