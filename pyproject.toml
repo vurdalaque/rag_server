@@ -111,6 +111,7 @@ module = "mcp.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+testpaths = ["tests", "."]
 addopts = "--ignore=test_mcp_long_tool_worker.py"
 markers = [
     "acceptance: requires a live ComfyUI backend",

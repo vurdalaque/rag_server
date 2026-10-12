@@ -45,6 +45,12 @@ rag_index.faiss
 rag_metadata.jsonl
 rag_manifest.json
 
+# Local MCP probe artifacts
+.tmp/
+tests/mcp_gen_out.json
+tests/mcp_init_out.json
+tests/mcp_init.hdr
+
 # OS
 .DS_Store
 Thumbs.db
