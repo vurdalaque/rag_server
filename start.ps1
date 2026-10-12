@@ -1,6 +1,8 @@
-# Запуск RAG server с переменными из .env
+# Запуск RAG server (FastAPI + MCP)
 #
 #   copy env.example .env
+#   python -m venv .venv; .\.venv\Scripts\Activate.ps1
+#   pip install -e .
 #   .\start.ps1
 #
 # Параметры:
@@ -65,9 +67,10 @@ if (-not $env:RAG_BUNDLE_STATE_DIR) { $env:RAG_BUNDLE_STATE_DIR = "./data/state"
 New-Item -ItemType Directory -Force -Path $env:RAG_STAGING_DIR | Out-Null
 New-Item -ItemType Directory -Force -Path $env:RAG_BUNDLE_STATE_DIR | Out-Null
 
-python -c "import rag_server" 2>$null
+$py = if (Test-Path "$Root\.venv\Scripts\python.exe") { "$Root\.venv\Scripts\python.exe" } else { "python" }
+& $py -c "import rag_server; import radius_rag" 2>$null
 if (-not $?) {
-    Write-Error "Cannot import rag_server. Run: pip install -e .  (from $Root)"
+    Write-Error "Cannot import rag_server/radius_rag. Run: pip install -e .  (from $Root)"
 }
 
 Write-Host "Starting RAG server on http://$($env:RAG_HOST):$($env:RAG_PORT)"
@@ -75,4 +78,4 @@ Write-Host "Staging: $($env:RAG_STAGING_DIR)"
 Write-Host "State:   $($env:RAG_BUNDLE_STATE_DIR)"
 Write-Host "Embedding: $($env:EMBEDDING_URL) ($($env:EMBEDDING_MODEL))"
 
-python -m uvicorn rag_server:app --host $env:RAG_HOST --port $env:RAG_PORT --timeout-graceful-shutdown 30
+& $py -m uvicorn rag_server:app --host $env:RAG_HOST --port $env:RAG_PORT --timeout-graceful-shutdown 30

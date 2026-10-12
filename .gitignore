@@ -13,10 +13,10 @@ build/
 venv/
 ENV/
 
-# Test and lint caches (pytest basetemp is under %TEMP%/radius_rag_server_pytest)
+# Test and lint caches (pytest basetemp: %TEMP%/radius_rag_server_pytest)
 .pytest_cache/
-.pytest_tmp/          # legacy; safe to delete if present
-.test_metrics_run/     # root; unit tests may use tests/unit/.test_metrics_run/
+.pytest_tmp/
+.test_metrics_run/
 .mypy_cache/
 .ruff_cache/
 .coverage

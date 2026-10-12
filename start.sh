@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Запуск RAG server с переменными из .env
+# Запуск RAG server (FastAPI + MCP) с переменными из .env
 #
+# Первый запуск:
 #   cp env.example .env
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -e .
 #   ./start.sh
 #
 # Параметры:
@@ -11,12 +14,15 @@
 # tmux (non-interactive shell, PATH без uv):
 #   tmux new -d -s radius-server './start.sh'
 #   # или с логом: tmux new -d -s radius-server './start.sh >>data/server.log 2>&1'
+#
+# Layout: код в src/radius_rag/, entrypoint uvicorn rag_server:app (корневой rag_server.py).
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
-# src/ → radius_rag; repo root → rag_server.py (uvicorn entry)
+
+# src/ → radius_rag; корень → rag_server.py и legacy import bootstrap
 export PYTHONPATH="${ROOT}/src:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 ENV_FILE=".env"
@@ -25,8 +31,17 @@ PORT=""
 USE_UV=false
 UV_BIN=""
 
+usage() {
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    echo "Options: --env-file PATH  --host HOST  --port PORT"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
         --env-file)
             ENV_FILE="$2"
             shift 2
@@ -40,7 +55,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Unknown argument: $1" >&2
+            echo "Unknown argument: $1 (try --help)" >&2
             exit 1
             ;;
     esac
@@ -126,6 +141,10 @@ if [[ -n "${RAG_VENV:-}" ]]; then
 elif [[ -n "${RAG_CONDA_ENV:-}" ]]; then
     activate_conda_env "$RAG_CONDA_ENV"
     PYTHON_BIN="$(command -v python)"
+elif [[ -x "$ROOT/.venv/bin/python" ]]; then
+    PYTHON_BIN="$ROOT/.venv/bin/python"
+    # shellcheck disable=SC1091
+    source "$ROOT/.venv/bin/activate"
 else
     case "${RAG_USE_UV:-auto}" in
         1|true|yes|on)
@@ -139,8 +158,6 @@ else
         auto)
             if [[ -f "$ROOT/pyproject.toml" ]] && find_uv; then
                 USE_UV=true
-            elif [[ -x "$ROOT/.venv/bin/python" ]]; then
-                PYTHON_BIN="$ROOT/.venv/bin/python"
             fi
             ;;
     esac
@@ -158,6 +175,15 @@ run_python() {
     fi
 }
 
+install_hint() {
+    echo "Install from repo root:" >&2
+    if [[ "$USE_UV" == true ]]; then
+        echo "  uv sync && uv pip install -e ." >&2
+    else
+        echo "  pip install -e ." >&2
+    fi
+}
+
 if [[ "$USE_UV" != true ]]; then
     if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
         echo "Python not found: $PYTHON_BIN" >&2
@@ -168,20 +194,16 @@ fi
 
 if ! run_python -c "import uvicorn" >/dev/null 2>&1; then
     echo "uvicorn is not installed." >&2
-    if [[ "$USE_UV" == true ]]; then
-        echo "Install deps: uv sync --active   # when using ~/.venv" >&2
-        echo "            or: uv sync          # for project .venv" >&2
-    else
-        echo "Install deps: pip install -e .   # or: pip install -r requirements.txt" >&2
-        echo "Python: $PYTHON_BIN" >&2
-    fi
+    install_hint
+    echo "Python: $PYTHON_BIN" >&2
     echo "For tmux add RAG_VENV=~/.venv to .env (recommended over RAG_USE_UV)." >&2
     exit 1
 fi
 
-if ! run_python -c "import rag_server" >/dev/null 2>&1; then
-    echo "Cannot import rag_server." >&2
+if ! run_python -c "import rag_server; import radius_rag" >/dev/null 2>&1; then
+    echo "Cannot import rag_server or radius_rag (check PYTHONPATH and editable install)." >&2
     run_python -c "import rag_server" 2>&1 || true
+    install_hint
     exit 1
 fi
 
@@ -194,12 +216,20 @@ export RAG_BUNDLE_STATE_DIR="${RAG_BUNDLE_STATE_DIR:-./data/state}"
 
 mkdir -p "$RAG_STAGING_DIR" "$RAG_BUNDLE_STATE_DIR"
 
+UVICORN_ARGS=(
+    -m uvicorn rag_server:app
+    --host "$RAG_HOST"
+    --port "$RAG_PORT"
+    --timeout-graceful-shutdown 30
+)
+
 if [[ "$USE_UV" == true ]]; then
     echo "Runner:  $UV_BIN run python"
+    echo "URL:     http://${RAG_HOST}:${RAG_PORT}"
     if [[ -n "${VIRTUAL_ENV:-}" ]] || [[ -d "${HOME}/.venv" ]]; then
-        exec "$UV_BIN" run --active python -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT" --timeout-graceful-shutdown 30
+        exec "$UV_BIN" run --active python "${UVICORN_ARGS[@]}"
     fi
-    exec "$UV_BIN" run python -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT" --timeout-graceful-shutdown 30
+    exec "$UV_BIN" run python "${UVICORN_ARGS[@]}"
 fi
 
 echo "Python:  $("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
@@ -208,4 +238,4 @@ echo "Staging: ${RAG_STAGING_DIR}"
 echo "State:   ${RAG_BUNDLE_STATE_DIR}"
 echo "Embedding: ${EMBEDDING_URL} (${EMBEDDING_MODEL})"
 
-exec "$PYTHON_BIN" -m uvicorn rag_server:app --host "$RAG_HOST" --port "$RAG_PORT" --timeout-graceful-shutdown 30
+exec "$PYTHON_BIN" "${UVICORN_ARGS[@]}"
