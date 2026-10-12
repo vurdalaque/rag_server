@@ -94,8 +94,8 @@ async def _iter_evaluated_events(
 ) -> AsyncIterator[tuple[dict[str, Any], dict[str, Any]]]:
     where, params = _event_where(criteria.filters)
     eval_clauses = ["ev.status = 'completed'"]
-    if criteria.judge.evaluation_version:
-        params.append(criteria.judge.evaluation_version)
+    if criteria.judge.raw_evaluation_version:
+        params.append(criteria.judge.raw_evaluation_version)
         eval_clauses.append(f"ev.evaluation_version = ${len(params)}")
     else:
         if criteria.judge.prompt_version:

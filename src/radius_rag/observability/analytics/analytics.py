@@ -42,27 +42,22 @@ class JudgeVersionFilter:
             return cls()
         from radius_rag.observability.evaluation.identity import EvaluationIdentity
 
-        ident = EvaluationIdentity.parse(evaluation_version)
+        stripped = evaluation_version.strip()
+        ident = EvaluationIdentity.parse(stripped)
+        # Exact evaluation_version match only when a methodology fingerprint is present
+        # (e.g. v1:qwen-judge+a1b2c3d4). Shorthand v1:model filters prompt + judge_model.
+        raw = stripped if ident.methodology_fingerprint else None
         return cls(
             prompt_version=ident.prompt_version or None,
             judge_model=ident.judge_model or None,
             methodology_fingerprint=ident.methodology_fingerprint,
-            raw_evaluation_version=evaluation_version.strip(),
+            raw_evaluation_version=raw,
         )
 
     @property
     def evaluation_version(self) -> str | None:
-        if self.raw_evaluation_version:
-            return self.raw_evaluation_version
-        from radius_rag.observability.evaluation.identity import build_evaluation_version
-
-        if self.prompt_version and self.judge_model:
-            return build_evaluation_version(
-                self.prompt_version,
-                self.judge_model,
-                self.methodology_fingerprint,
-            )
-        return None
+        """Full evaluation_version string for exact SQL match (includes +fingerprint when set)."""
+        return self.raw_evaluation_version
 
 
 def _append_filter(
@@ -218,7 +213,7 @@ async def fetch_coverage(
         *eval_params,
     )
 
-    evaluation_version = judge.evaluation_version or cfg.evaluation_version
+    evaluation_version = judge.raw_evaluation_version or cfg.evaluation_version
 
     pending = await pool.fetchval(
         """
