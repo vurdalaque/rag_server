@@ -16,7 +16,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
-export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+# src/ → radius_rag; repo root → rag_server.py (uvicorn entry)
+export PYTHONPATH="${ROOT}/src:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 ENV_FILE=".env"
 HOST=""
@@ -171,7 +172,7 @@ if ! run_python -c "import uvicorn" >/dev/null 2>&1; then
         echo "Install deps: uv sync --active   # when using ~/.venv" >&2
         echo "            or: uv sync          # for project .venv" >&2
     else
-        echo "Install deps: pip install -r requirements.txt" >&2
+        echo "Install deps: pip install -e .   # or: pip install -r requirements.txt" >&2
         echo "Python: $PYTHON_BIN" >&2
     fi
     echo "For tmux add RAG_VENV=~/.venv to .env (recommended over RAG_USE_UV)." >&2

@@ -16,7 +16,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 Set-Location $Root
-$env:PYTHONPATH = if ($env:PYTHONPATH) { "$Root\src;$env:PYTHONPATH" } else { "$Root\src" }
+$env:PYTHONPATH = if ($env:PYTHONPATH) { "$Root\src;$Root;$env:PYTHONPATH" } else { "$Root\src;$Root" }
 
 function Import-DotEnv {
     param([string]$Path)
@@ -64,6 +64,11 @@ if (-not $env:RAG_BUNDLE_STATE_DIR) { $env:RAG_BUNDLE_STATE_DIR = "./data/state"
 
 New-Item -ItemType Directory -Force -Path $env:RAG_STAGING_DIR | Out-Null
 New-Item -ItemType Directory -Force -Path $env:RAG_BUNDLE_STATE_DIR | Out-Null
+
+python -c "import rag_server" 2>$null
+if (-not $?) {
+    Write-Error "Cannot import rag_server. Run: pip install -e .  (from $Root)"
+}
 
 Write-Host "Starting RAG server on http://$($env:RAG_HOST):$($env:RAG_PORT)"
 Write-Host "Staging: $($env:RAG_STAGING_DIR)"
