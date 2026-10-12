@@ -303,9 +303,13 @@ Server валидирует checksums и соответствие `FAISS.ntotal`
 ## Разработка
 
 ```bash
+pip install -e ".[dev]"
 ruff check .
 mypy rag_server.py rag_service.py rag_bundle.py
-python -m pytest test_rag_bundle.py -v
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q   # optional: faiss + HTTP
+# Evaluator CLI (after pip install -e .):
+radius-rag-evaluator --help
 ```
 
 На Windows при `PermissionError` в pytest:
