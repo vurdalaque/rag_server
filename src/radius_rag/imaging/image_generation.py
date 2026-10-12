@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-import radius_rag.imaging.comfy_workflow
+from radius_rag.imaging import comfy_workflow
 from radius_rag.imaging.comfy_client import ComfyUIClient
 from radius_rag.imaging.image_generation_config import ImageGenerationConfig, load_image_generation_config
 from radius_rag.imaging.image_concurrency import comfy_gpu_slot
