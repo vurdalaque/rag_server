@@ -8,4 +8,4 @@ mcp==2.2.0
 prometheus-client>=0.21,<1
 websockets>=14,<16
 Pillow>=10,<12
-
+asyncpg>=0.30,<1

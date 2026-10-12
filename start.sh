@@ -141,6 +141,8 @@ if [[ -n "${RAG_VENV:-}" ]]; then
 elif [[ -n "${RAG_CONDA_ENV:-}" ]]; then
     activate_conda_env "$RAG_CONDA_ENV"
     PYTHON_BIN="$(command -v python)"
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
 elif [[ -x "$ROOT/.venv/bin/python" ]]; then
     PYTHON_BIN="$ROOT/.venv/bin/python"
     # shellcheck disable=SC1091
@@ -176,12 +178,20 @@ run_python() {
 }
 
 install_hint() {
-    echo "Install from repo root:" >&2
+    local exe
+    exe="$(run_python -c 'import sys; print(sys.executable)' 2>/dev/null || echo "$PYTHON_BIN")"
+    echo "Install into the same interpreter start.sh uses:" >&2
+    echo "  $exe -m pip install -e ." >&2
     if [[ "$USE_UV" == true ]]; then
-        echo "  uv sync && uv pip install -e ." >&2
-    else
-        echo "  pip install -e ." >&2
+        echo "  # or: cd \"$ROOT\" && uv pip install -e . --python \"$exe\"" >&2
     fi
+}
+
+retrieval_telemetry_wanted() {
+    case "${RETRIEVAL_TELEMETRY_ENABLED:-false}" in
+        1|true|yes|on|TRUE|YES|ON) return 0 ;;
+    esac
+    return 1
 }
 
 if [[ "$USE_UV" != true ]]; then
@@ -205,6 +215,17 @@ if ! run_python -c "import rag_server; import radius_rag" >/dev/null 2>&1; then
     run_python -c "import rag_server" 2>&1 || true
     install_hint
     exit 1
+fi
+
+if retrieval_telemetry_wanted && [[ -n "${RETRIEVAL_DATABASE_URL:-}" ]]; then
+    if ! run_python -c "import asyncpg" >/dev/null 2>&1; then
+        echo "RETRIEVAL_TELEMETRY_ENABLED with RETRIEVAL_DATABASE_URL requires asyncpg." >&2
+        echo "Python: $(run_python -c 'import sys; print(sys.executable)')" >&2
+        echo "You may have installed into a different venv (e.g. ~/.venv vs $ROOT/.venv)." >&2
+        echo "Set RAG_VENV=~/.venv in .env if deps live there, or install into the interpreter above." >&2
+        install_hint
+        exit 1
+    fi
 fi
 
 export RAG_HOST="${HOST:-${RAG_HOST:-0.0.0.0}}"
