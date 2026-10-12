@@ -21,15 +21,31 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _validate_database_url(url: str) -> str:
+    normalized = url.strip()
+    if not normalized:
+        raise RuntimeError("RETRIEVAL_DATABASE_URL is not configured")
+    lowered = normalized.lower()
+    if lowered.startswith("postgresql//") or lowered.startswith("postgres//"):
+        raise RuntimeError(
+            "RETRIEVAL_DATABASE_URL is invalid: use postgresql://user:pass@host:port/dbname "
+            "(note the colon and two slashes after postgresql)"
+        )
+    if not (lowered.startswith("postgresql://") or lowered.startswith("postgres://")):
+        raise RuntimeError(
+            "RETRIEVAL_DATABASE_URL must start with postgresql:// or postgres://"
+        )
+    return normalized
+
+
 async def get_pool(config: RetrievalConfig | None = None) -> Any:
     global _pool
     cfg = config or load_retrieval_config()
-    if not cfg.database_url:
-        raise RuntimeError("RETRIEVAL_DATABASE_URL is not configured")
+    dsn = _validate_database_url(cfg.database_url)
     if _pool is None:
         asyncpg = load_asyncpg()
         _pool = await asyncpg.create_pool(
-            cfg.database_url,
+            dsn,
             min_size=1,
             max_size=5,
             command_timeout=120,
