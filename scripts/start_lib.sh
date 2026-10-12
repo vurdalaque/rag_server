@@ -2,7 +2,8 @@
 # shellcheck shell=bash
 
 start_lib_root() {
-    START_ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")/.." && pwd)"
+    # Caller is repo-root start_*.sh (BASH_SOURCE[1]), not this file under scripts/.
+    START_ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
     cd "$START_ROOT"
     export PYTHONPATH="${START_ROOT}/src:${START_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 }
