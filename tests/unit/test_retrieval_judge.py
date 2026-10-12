@@ -76,6 +76,34 @@ def test_validate_judge_response_rejects_bad_chunk_index() -> None:
         validate_judge_response(payload, 1)
 
 
+def test_validate_judge_response_accepts_object_map_per_chunk_scores() -> None:
+    payload = _valid_judge_payload(2)
+    payload["per_chunk_scores"] = {
+        "0": {"relevance": 3},
+        "1": {"relevance": 1, "rationale": "tangential"},
+    }
+    result = validate_judge_response(payload, 2)
+    assert result["ordered_relevances"] == [3, 1]
+
+
+def test_validate_judge_response_fills_missing_qwen_fields() -> None:
+    payload = {
+        "per_chunk_scores": [{"chunk_index": 0, "relevance": 2}],
+        "context_sufficiency_score": 2,
+        "query_classification": {"category": "answerable"},
+    }
+    result = validate_judge_response(payload, 1)
+    assert result["context_sufficiency"]["sufficient"] is True
+    assert result["explanation"] == ""
+
+
+def test_validate_judge_response_accepts_relevance_only_list() -> None:
+    payload = _valid_judge_payload(3)
+    payload["per_chunk_scores"] = [2, 0, 3]
+    result = validate_judge_response(payload, 3)
+    assert result["ordered_relevances"] == [2, 0, 3]
+
+
 def test_run_judge_retries_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _test_config(judge_json_max_retries=2)
     calls: list[int] = []
