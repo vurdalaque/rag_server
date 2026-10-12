@@ -16,6 +16,10 @@ if str(_ROOT) not in sys.path:
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from radius_rag._legacy_bootstrap import install_legacy_imports
+
+install_legacy_imports()
+
 os.environ.setdefault("MCP_JSON_RESPONSE", "true")
 
 _BASETEMP = Path(tempfile.gettempdir()) / "radius_rag_server_pytest"

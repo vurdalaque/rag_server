@@ -84,12 +84,19 @@ Regenerate: `python tools/migrate_imaging_mcp_package.py` + `python tools/write_
 
 Regenerate shims: `python tools/migrate_*_package.py` + `python tools/write_*_shims.py`.
 
-## Why so many files?
+## Root Python files
+
+| File | Purpose |
+|------|---------|
+| `rag_server.py` | Uvicorn entry (`rag_server:app`). |
+| `retrieval_evaluator.py` | `python -m retrieval_evaluator`. |
+| `conftest.py` | Pytest: `PYTHONPATH=src` + legacy import hook. |
+
+All former top-level modules (`rag_service`, `retrieval_db`, `image_mcp_tools`, …) resolve via `radius_rag._legacy_bootstrap` (`MetaPathFinder`), installed from `conftest`, `rag_server.py`, and `radius_rag` package import.
 
 | Layer | Purpose |
 |-------|---------|
-| `src/radius_rag/**` | Canonical implementation (one copy of logic). |
-| Root `*.py` shims (~50) | Backward-compatible imports and `uvicorn rag_server:app`; listed in `pyproject.toml` `py-modules`. |
-| `tools/migrate_*` + `write_*_shims` | Regenerate after editing shims — do not hand-edit both trees. |
-| `data/` | Optional local overrides only; default Comfy workflow ships in `src/radius_rag/imaging/data/`. |
-| `conftest.py` (root + `tests/`) | Root: legacy; `tests/conftest.py`: pytest `testpaths` entry (both set `PYTHONPATH=src`). |
+| `src/radius_rag/**` | Canonical implementation. |
+| `tools/migrate_*` | Copy edited modules into `src/` (no root shims). |
+| `tools/remove_root_shims.py` | Delete obsolete root `*.py` if reintroduced. |
+| `data/` | Optional local overrides; default workflow in `src/radius_rag/imaging/data/`. |

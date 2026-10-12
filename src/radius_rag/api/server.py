@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+from radius_rag._legacy_bootstrap import install_legacy_imports
+
+install_legacy_imports()
+
 import json
 import logging
 import os

@@ -1,3 +1,6 @@
-"""Backward-compatible shim; see radius_rag.observability."""
+"""Run: python -m retrieval_evaluator (requires PYTHONPATH=src or pip install -e .)."""
 
-from radius_rag.observability.evaluation.evaluator import *  # noqa: F403
+from radius_rag.observability.evaluation.evaluator import main
+
+if __name__ == "__main__":
+    main()

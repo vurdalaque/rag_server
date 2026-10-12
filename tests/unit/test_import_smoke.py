@@ -26,13 +26,16 @@ def test_rag_server_shim_exports_app() -> None:
     assert app is not None
 
 
-def test_legacy_retrieval_shims() -> None:
-    from retrieval_db import insert_events, run_migrations
-    from retrieval_event import maybe_emit_retrieval_event
+def test_legacy_top_level_imports_alias_package() -> None:
+    import rag_service
+    from radius_rag.rag import service as rag_impl
 
-    assert callable(insert_events)
-    assert callable(run_migrations)
-    assert callable(maybe_emit_retrieval_event)
+    assert rag_service is rag_impl
+
+    from retrieval_db import insert_events
+    from radius_rag.observability.storage import db as db_impl
+
+    assert insert_events is db_impl.insert_events
 
 
 def test_storage_db_has_no_top_level_asyncpg() -> None:
