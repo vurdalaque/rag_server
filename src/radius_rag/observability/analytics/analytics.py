@@ -480,6 +480,161 @@ async def fetch_stats_bundle(
     }
 
 
+async def fetch_retrieval_ops_dashboard(
+    *,
+    config: RetrievalConfig | None = None,
+) -> dict[str, Any]:
+    cfg = config or load_retrieval_config()
+    version = cfg.evaluation_version
+    pool = await get_pool(cfg)
+
+    job_rows = await pool.fetch(
+        """
+        SELECT status, COUNT(*)::bigint AS count
+        FROM retrieval_obs.evaluation_jobs
+        WHERE evaluation_version = $1
+        GROUP BY status
+        ORDER BY status
+        """,
+        version,
+    )
+    jobs_by_status = {row["status"]: int(row["count"]) for row in job_rows}
+
+    missing_completed = await pool.fetchval(
+        """
+        SELECT COUNT(*)::bigint
+        FROM retrieval_obs.retrieval_events e
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM retrieval_obs.retrieval_evaluations ev
+            WHERE ev.event_id = e.event_id
+              AND ev.event_created_at = e.created_at
+              AND ev.evaluation_version = $1
+              AND ev.status = 'completed'
+        )
+        """,
+        version,
+    )
+
+    reason_rows = await pool.fetch(
+        """
+        SELECT
+            CASE
+                WHEN last_error ILIKE '%empty_final_top_k%' THEN 'empty_final_top_k'
+                WHEN last_error ILIKE '%missing_chunk_text%' THEN 'missing_chunk_text'
+                WHEN last_error ILIKE '%per_chunk_scores%'
+                  OR last_error ILIKE '%context_sufficiency%' THEN 'judge_validation'
+                ELSE 'other'
+            END AS reason,
+            COUNT(*)::bigint AS count
+        FROM retrieval_obs.evaluation_jobs
+        WHERE evaluation_version = $1
+          AND status IN ('failed', 'dead')
+        GROUP BY 1
+        ORDER BY count DESC
+        """,
+        version,
+    )
+
+    requeue_candidates = await pool.fetchval(
+        """
+        SELECT COUNT(*)::bigint
+        FROM retrieval_obs.evaluation_jobs
+        WHERE evaluation_version = $1
+          AND status IN ('failed', 'dead')
+          AND last_error NOT ILIKE '%empty_final_top_k%'
+          AND last_error NOT ILIKE '%missing_chunk_text%'
+        """,
+        version,
+    )
+
+    return {
+        "evaluation_version": version,
+        "jobs_by_status": jobs_by_status,
+        "missing_completed_evaluations": int(missing_completed or 0),
+        "failed_reasons": [_row_to_json(row) for row in reason_rows],
+        "requeue_retryable_count": int(requeue_candidates or 0),
+        "evaluation_ops_all_versions": await fetch_evaluation_ops(config=cfg),
+    }
+
+
+async def fetch_evaluation_backlog(
+    evaluation_version: str,
+    *,
+    limit: int = 50,
+    cursor_created_at: datetime | None = None,
+    cursor_event_id: UUID | str | None = None,
+    only_missing_completed: bool = True,
+    config: RetrievalConfig | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    from radius_rag.observability.evaluation.job_errors import (
+        classify_job_failure,
+        job_error_retryable,
+    )
+
+    pool = await get_pool(config)
+    clauses = ["1=1"]
+    params: list[Any] = [evaluation_version]
+    if only_missing_completed:
+        clauses.append(
+            """
+            NOT EXISTS (
+                SELECT 1
+                FROM retrieval_obs.retrieval_evaluations ev
+                WHERE ev.event_id = e.event_id
+                  AND ev.event_created_at = e.created_at
+                  AND ev.evaluation_version = $1
+                  AND ev.status = 'completed'
+            )
+            """
+        )
+    if cursor_created_at is not None and cursor_event_id is not None:
+        params.extend([cursor_created_at, cursor_event_id])
+        clauses.append(
+            f"(e.created_at, e.event_id) > (${len(params) - 1}, ${len(params)})"
+        )
+    params.append(limit)
+    where = " AND ".join(clauses)
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            e.event_id,
+            e.created_at AS event_created_at,
+            e.status AS event_status,
+            e.request_source,
+            j.job_id,
+            j.status AS job_status,
+            j.last_error,
+            j.attempts,
+            j.updated_at AS job_updated_at
+        FROM retrieval_obs.retrieval_events e
+        LEFT JOIN retrieval_obs.evaluation_jobs j
+            ON j.event_id = e.event_id
+           AND j.evaluation_version = $1
+        WHERE {where}
+        ORDER BY e.created_at, e.event_id
+        LIMIT ${len(params)}
+        """,
+        *params,
+    )
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        last_error = row["last_error"]
+        item = _row_to_json(row)
+        item["failure_reason"] = classify_job_failure(last_error)
+        item["retryable"] = job_error_retryable(last_error)
+        items.append(item)
+
+    next_cursor: dict[str, Any] | None = None
+    if rows and len(rows) == limit:
+        last = rows[-1]
+        next_cursor = {
+            "cursor_created_at": last["event_created_at"].isoformat(),
+            "cursor_event_id": str(last["event_id"]),
+        }
+    return items, next_cursor
+
+
 async def list_events_for_bulk_enqueue(
     filters: EventFilters,
     *,

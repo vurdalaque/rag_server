@@ -15,6 +15,31 @@ python -m retrieval_evaluator  → evaluation worker → LLM judge → retrieval
 
 Admin JSON API (`RAG_ADMIN_TOKEN`): `/admin/retrieval/*` — stats, compare, export, bulk/single re-eval enqueue.
 
+### Operator CLI (no psql/docker)
+
+From a machine that can reach the RAG HTTP port (laptop → `spark.home:8000` or on spark → `127.0.0.1:8000`):
+
+```bash
+export RAG_ADMIN_TOKEN=...
+export RAG_BASE_URL=http://spark.home:8000   # optional; default 127.0.0.1:8000
+
+pip install -e .   # installs `retrieval-admin`
+retrieval-admin status
+retrieval-admin ops
+retrieval-admin backlog --limit 20
+retrieval-admin requeue-failed          # skips empty_final_top_k / missing_chunk_text
+retrieval-admin bulk --start 2026-01-01T00:00:00Z --end 2026-12-31T23:59:59Z
+retrieval-admin requeue <event_uuid> 2026-10-12T15:13:59.895134+00:00
+```
+
+Or without install: `python tools/retrieval_admin.py ops`
+
+New admin endpoints used by the CLI:
+
+- `GET /admin/retrieval/ops` — jobs by status for current `evaluation_version`, failure reasons, requeue hints
+- `GET /admin/retrieval/backlog` — events missing completed evaluation (+ `retryable` flag)
+- `POST /admin/retrieval/jobs/requeue-failed` — bulk reset `failed`/`dead` → `pending` (optional `skip_data_errors`)
+
 ## Enable telemetry
 
 ```env

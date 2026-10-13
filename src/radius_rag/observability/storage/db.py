@@ -277,6 +277,45 @@ async def reconcile_missing_evaluation_jobs(
     return len(rows)
 
 
+async def requeue_failed_evaluation_jobs(
+    evaluation_version: str,
+    *,
+    skip_data_errors: bool = True,
+    include_dead: bool = True,
+) -> int:
+    """Reset failed/dead jobs to pending for another worker attempt."""
+    statuses = ["failed", "dead"] if include_dead else ["failed"]
+    pool = await get_pool()
+    skip_clause = ""
+    if skip_data_errors:
+        skip_clause = """
+          AND last_error NOT ILIKE '%empty_final_top_k%'
+          AND last_error NOT ILIKE '%missing_chunk_text%'
+        """
+    result = await pool.execute(
+        f"""
+        UPDATE retrieval_obs.evaluation_jobs
+        SET status = 'pending',
+            attempts = 0,
+            lease_expires_at = NULL,
+            lease_token = NULL,
+            next_attempt_at = NULL,
+            last_error = NULL,
+            updated_at = now()
+        WHERE evaluation_version = $1
+          AND status = ANY($2::text[])
+          {skip_clause}
+        """,
+        evaluation_version,
+        statuses,
+    )
+    # asyncpg returns e.g. "UPDATE 12"
+    try:
+        return int(result.split()[-1])
+    except (AttributeError, IndexError, ValueError):
+        return 0
+
+
 async def enqueue_evaluation_jobs_bulk(
     events: list[dict[str, Any]],
     evaluation_version: str,

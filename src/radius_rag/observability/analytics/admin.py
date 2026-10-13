@@ -22,6 +22,8 @@ from radius_rag.observability.analytics.analytics import (
     EventFilters,
     JudgeVersionFilter,
     compare_periods,
+    fetch_evaluation_backlog,
+    fetch_retrieval_ops_dashboard,
     fetch_stats_bundle,
     fetch_storage_stats,
     fetch_worst_queries,
@@ -29,7 +31,12 @@ from radius_rag.observability.analytics.analytics import (
     list_events_for_bulk_enqueue,
 )
 from radius_rag.observability.config import load_retrieval_config
-from radius_rag.observability.storage.db import enqueue_evaluation_job, enqueue_evaluation_jobs_bulk, fetch_retrieval_event
+from radius_rag.observability.storage.db import (
+    enqueue_evaluation_job,
+    enqueue_evaluation_jobs_bulk,
+    fetch_retrieval_event,
+    requeue_failed_evaluation_jobs,
+)
 from radius_rag.observability.analytics.export import ExportCriteria, ExportFormat, export_jsonl
 
 
@@ -74,6 +81,12 @@ class BulkEvaluateBody(BaseModel):
 
 class EvaluateEventBody(BaseModel):
     event_created_at: str
+
+
+class RequeueFailedBody(BaseModel):
+    evaluation_version: str | None = None
+    skip_data_errors: bool = True
+    include_dead: bool = True
 
 
 def register_retrieval_admin_routes(
@@ -160,6 +173,62 @@ def register_retrieval_admin_routes(
         _: None = Depends(require_admin),
     ) -> dict[str, Any]:
         return await fetch_storage_stats()
+
+    @router.get("/ops")
+    async def retrieval_ops(
+        request: Request,
+        _: None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return await fetch_retrieval_ops_dashboard()
+
+    @router.get("/backlog")
+    async def retrieval_backlog(
+        request: Request,
+        limit: int = Query(50, ge=1, le=500),
+        evaluation_version: str | None = None,
+        cursor_created_at: str | None = None,
+        cursor_event_id: str | None = None,
+        only_missing_completed: bool = True,
+        _: None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        cfg = load_retrieval_config()
+        version = evaluation_version or cfg.evaluation_version
+        cursor_at = (
+            _parse_dt(cursor_created_at, "cursor_created_at") if cursor_created_at else None
+        )
+        items, next_cursor = await fetch_evaluation_backlog(
+            version,
+            limit=limit,
+            cursor_created_at=cursor_at,
+            cursor_event_id=cursor_event_id,
+            only_missing_completed=only_missing_completed,
+        )
+        return {
+            "evaluation_version": version,
+            "items": items,
+            "count": len(items),
+            "next_cursor": next_cursor,
+        }
+
+    @router.post("/jobs/requeue-failed")
+    async def retrieval_requeue_failed(
+        body: RequeueFailedBody,
+        request: Request,
+        _: None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        cfg = load_retrieval_config()
+        version = body.evaluation_version or cfg.evaluation_version
+        updated = await requeue_failed_evaluation_jobs(
+            version,
+            skip_data_errors=body.skip_data_errors,
+            include_dead=body.include_dead,
+        )
+        return {
+            "evaluation_version": version,
+            "requeued_count": updated,
+            "skip_data_errors": body.skip_data_errors,
+            "include_dead": body.include_dead,
+        }
 
     # Register /evaluate/bulk before /evaluate/{event_id} so "bulk" is not parsed as UUID.
     @router.post("/evaluate/bulk")
