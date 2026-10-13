@@ -161,35 +161,7 @@ def register_retrieval_admin_routes(
     ) -> dict[str, Any]:
         return await fetch_storage_stats()
 
-    @router.post("/evaluate/{event_id}")
-    async def retrieval_evaluate_one(
-        event_id: UUID,
-        body: EvaluateEventBody,
-        request: Request,
-        judge_version: str | None = None,
-        _: None = Depends(require_admin),
-    ) -> dict[str, Any]:
-        cfg = load_retrieval_config()
-        created_at = _parse_dt(body.event_created_at, "event_created_at")
-        event = await fetch_retrieval_event(event_id, created_at)
-        if event is None:
-            raise HTTPException(status_code=404, detail="retrieval event not found")
-
-        version = judge_version or cfg.evaluation_version
-        inserted = await enqueue_evaluation_job(
-            event_id,
-            created_at,
-            version,
-            max_attempts=cfg.max_retries + 1,
-            reset_terminal=True,
-        )
-        return {
-            "event_id": str(event_id),
-            "event_created_at": created_at.isoformat(),
-            "evaluation_version": version,
-            "enqueued": inserted,
-        }
-
+    # Register /evaluate/bulk before /evaluate/{event_id} so "bulk" is not parsed as UUID.
     @router.post("/evaluate/bulk")
     async def retrieval_evaluate_bulk(
         body: BulkEvaluateBody,
@@ -221,6 +193,35 @@ def register_retrieval_admin_routes(
             "inserted_count": inserted,
             "skipped_count": skipped,
             "next_cursor": next_cursor,
+        }
+
+    @router.post("/evaluate/{event_id}")
+    async def retrieval_evaluate_one(
+        event_id: UUID,
+        body: EvaluateEventBody,
+        request: Request,
+        judge_version: str | None = None,
+        _: None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        cfg = load_retrieval_config()
+        created_at = _parse_dt(body.event_created_at, "event_created_at")
+        event = await fetch_retrieval_event(event_id, created_at)
+        if event is None:
+            raise HTTPException(status_code=404, detail="retrieval event not found")
+
+        version = judge_version or cfg.evaluation_version
+        inserted = await enqueue_evaluation_job(
+            event_id,
+            created_at,
+            version,
+            max_attempts=cfg.max_retries + 1,
+            reset_terminal=True,
+        )
+        return {
+            "event_id": str(event_id),
+            "event_created_at": created_at.isoformat(),
+            "evaluation_version": version,
+            "enqueued": inserted,
         }
 
     @router.get("/export")
