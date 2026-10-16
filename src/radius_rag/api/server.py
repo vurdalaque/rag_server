@@ -124,15 +124,21 @@ MCP_TRANSPORT_SECURITY = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
     allowed_hosts=[
         "localhost:*",
+        "spark.home:*",
         "127.0.0.1:*",
         "192.168.10.250:*",
         "192.168.13.250:*",
+        "192.168.10.1:*",
+        "192.168.13.1:*",
     ],
     allowed_origins=[
         "http://localhost:*",
+        "http://spark.home:*",
         "http://127.0.0.1:*",
         "http://192.168.10.250:*",
         "http://192.168.13.250:*",
+        "http://192.168.10.1:*",
+        "http://192.168.13.1:*",
     ],
 )
 
