@@ -190,16 +190,16 @@ async def search_project(
     repo: str | None = None,
 ) -> dict[str, Any]:
     """
-    Search the indexed Project project source code.
+    Search the indexed Project corpus: source code and documentation.
 
-    Use this tool for questions about Project implementation,
-    classes, functions, symbols, files, internal APIs,
-    database access and project architecture.
+    Repos:
+    - radius: application source code
+    - radius-doc: documentation stored in git
+    - radius-confluence: Confluence pages. They are not in git.
+      Pass repo="radius-confluence" and source_type="documentation".
 
-    The current index contains source code only.
-    It does not contain public Internet information,
-    README files, analyst documentation or API documentation.
-
+    Use source_type "code" or "documentation" to narrow the search.
+    Do not treat a repo as missing until a search of that repo returns nothing.
     Do not repeat equivalent searches when no relevant results are found.
     """
     with retrieval_context(
@@ -244,13 +244,13 @@ async def search_project(
         return {
             "query": query,
             "searched_sources": [
-                "Project source-code index",
+                "Project index",
             ],
             "count": 0,
             "results": [],
             "retry_recommended": False,
             "message": (
-                "No relevant Project source-code fragments were found. "
+                "No relevant Project fragments were found. "
                 "Do not repeat the same search using minor paraphrases."
             ),
         }
@@ -258,13 +258,13 @@ async def search_project(
     return {
         "query": query,
         "searched_sources": [
-            "Project source-code index",
+            "Project index",
         ],
         "count": len(results),
         "results": results,
         "retry_recommended": False,
         "message": (
-            "Relevant Project source-code fragments were found."
+            "Relevant Project fragments were found."
         ),
     }
 

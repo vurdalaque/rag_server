@@ -1062,12 +1062,18 @@ class RagService:
                 retrieved_section = "\n".join(
                     [
                         (
-                            "You are a code assistant "
-                            "for the Project project."
+                            "You are an assistant for the "
+                            "Project project."
                         ),
                         (
                             "Use the retrieved project "
                             "sources when relevant."
+                        ),
+                        (
+                            "Sources may be source code "
+                            "(repo radius), git documentation "
+                            "(repo radius-doc), or Confluence "
+                            "pages (repo radius-confluence)."
                         ),
                         (
                             "The sources are ordered by "
@@ -1095,12 +1101,18 @@ class RagService:
                 retrieved_section = "\n".join(
                     [
                         (
-                            "You are a code assistant "
-                            "for the Project project."
+                            "You are an assistant for the "
+                            "Project project."
                         ),
                         (
-                            "No relevant Project source-code "
-                            "fragments were retrieved."
+                            "No relevant Project fragments "
+                            "were retrieved."
+                        ),
+                        (
+                            "The index includes source code "
+                            "(repo radius), git documentation "
+                            "(repo radius-doc), and Confluence "
+                            "pages (repo radius-confluence)."
                         ),
                         (
                             "Do not invent project APIs, "
@@ -1108,7 +1120,7 @@ class RagService:
                         ),
                         (
                             "State explicitly that the indexed "
-                            "source code is insufficient."
+                            "project sources are insufficient."
                         ),
                     ]
                 )

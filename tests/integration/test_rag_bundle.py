@@ -620,7 +620,7 @@ def test_enrich_messages_accepts_instance_call() -> None:
     )
 
     assert messages[0]["role"] == "system"
-    assert "You are a code assistant" in messages[0]["content"]
+    assert "You are an assistant for the Project project." in messages[0]["content"]
     assert "context chunk" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "question"}
 

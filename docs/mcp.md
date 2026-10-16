@@ -200,10 +200,10 @@ Mcp-Method: server/discover
 ```json
 {
   "query": "Radius IPC",
-  "searched_sources": ["Project source-code index"],
+  "searched_sources": ["Project index"],
   "count": 2,
   "retry_recommended": false,
-  "message": "Relevant Project source-code fragments were found.",
+  "message": "Relevant Project fragments were found.",
   "results": [ /* SearchHit[] */ ]
 }
 ```
@@ -226,11 +226,11 @@ Mcp-Method: server/discover
 ```json
 {
   "query": "...",
-  "searched_sources": ["Project source-code index"],
+  "searched_sources": ["Project index"],
   "count": 0,
   "results": [],
   "retry_recommended": false,
-  "message": "No relevant Project source-code fragments were found. Do not repeat the same search using minor paraphrases."
+  "message": "No relevant Project fragments were found. Do not repeat the same search using minor paraphrases."
 }
 ```
 
